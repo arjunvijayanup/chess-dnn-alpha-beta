@@ -14,8 +14,10 @@ checkmate_score = 1000
 stalemate_score = 0
 max_depth = 3 # set global variable for search depth
 
-# Finding next best move based on material advantage
-# This function not called anymore, we will use recursive function instead
+'''
+Finding next best move based on material advantage alone (minmimax algorithm without recursion)
+This function not called anymore, we will use recursive function instead
+'''
 def best_move_by_material(game_state, legal_moves):
     turn_multiplier = 1 if game_state.white_to_move else -1 # Determine if it's white's turn
     opponent_minmax_eval_score = checkmate_score # Initialize to a very high score for opponent's minimum max score (min score obtainable)
@@ -54,11 +56,15 @@ def best_move_by_material(game_state, legal_moves):
 Helper function to make first recursive call to best move function
 '''
 def get_best_move( game_state, legal_moves):
-    global next_best_move
+    global next_best_move, function_calls # Initialize the next best move to None and function calls to 0
     next_best_move = None # Initialize the next best move to None
-    # minimax_search(game_state, legal_moves, max_depth, game_state.white_to_move)
+    function_calls = 0 # Initialize the function calls to 0
     turn_multiplier = 1 if game_state.white_to_move else -1 # Determine if it's white's turn
-    negamax_search(game_state, legal_moves, max_depth, turn_multiplier) # Recursive function to find the best move
+    random.shuffle(legal_moves) # Shuffle the legal moves to add randomness
+    # minimax_search(game_state, legal_moves, max_depth, game_state.white_to_move)
+    # negamax_search(game_state, legal_moves, max_depth, turn_multiplier) 
+    negamax_alpha_beta_search(game_state, legal_moves, max_depth, -checkmate_score, checkmate_score, turn_multiplier) # Recursive function to find the best move (pass maximum alpha beta)
+    print(f"Number of function calls made: {function_calls}") # check performance of the algorithm
     return next_best_move # return the best move found by the minimax algorithm
 
 '''
@@ -108,7 +114,9 @@ def minimax_search(game_state, legal_moves, search_depth, white_to_move):
 Alternate (cleaner) Negamax algorithm to find the best move (recursive function)
 '''
 def negamax_search(game_state, legal_moves, search_depth, turn_multiplier):
-    global next_best_move # Initialize the next best move to None
+    global next_best_move, function_calls # Initialize the next best move to None and function calls to 0
+    function_calls += 1 # Increment the function calls count
+    best_moves_list = [] # Initialize the list of best moves
     if search_depth == 0 or not legal_moves: # If search depth is 0 or no legal moves, return the evaluation score: 
         return turn_multiplier * board_eval_score(game_state)
 
@@ -116,7 +124,7 @@ def negamax_search(game_state, legal_moves, search_depth, turn_multiplier):
     for move in legal_moves: # loop through each legal move the player can make
         game_state.make_move(move) # Make the player's move in the game state
         next_possible_moves = game_state.get_valid_moves() # Get the valid moves for the next possible moves
-        score = -negamax_search(game_state, next_possible_moves, search_depth - 1, -turn_multiplier) # Recursive call to find the best move for the opponent (turn_multiplier = -turn_multiplier)
+        score = -negamax_search(game_state, next_possible_moves, search_depth - 1, -turn_multiplier) # Recursive call to find the best move for the opponent
         if score > max_score: # If the score is greater than the current max score
             max_score = score # Update the maximum score
             if search_depth == max_depth: # If the search depth is at the maximum depth
@@ -128,6 +136,39 @@ def negamax_search(game_state, legal_moves, search_depth, turn_multiplier):
     if search_depth == max_depth and best_moves_list: # If there are best moves found at the maximum search depth
         next_best_move = random.choice(best_moves_list) # Randomly select one of the best moves
     return max_score # Return the maximum score found
+
+'''
+Negamax algorithm to find the best move (recursive function) with alpha-beta pruning (improved efficiency)
+'''
+
+def negamax_alpha_beta_search(game_state, legal_moves, search_depth, alpha, beta, turn_multiplier):
+    global next_best_move, function_calls # Initialize the next best move to None and function calls to 0
+    function_calls += 1 # Increment the function calls count
+    best_moves_list = [] # Initialize the list of best moves
+    if search_depth == 0 or not legal_moves: # If search depth is 0 or no legal moves, return the evaluation score: 
+        return turn_multiplier * board_eval_score(game_state)
+
+    max_score = -checkmate_score # Initialize to a very low score for the player's best move (max score obtainable)
+    for move in legal_moves: # loop through each legal move the player can make
+        game_state.make_move(move) # Make the player's move in the game state
+        next_possible_moves = game_state.get_valid_moves() # Get the valid moves for the next possible moves
+        score = -negamax_alpha_beta_search(game_state, next_possible_moves, search_depth - 1, -beta, -alpha, -turn_multiplier) # Recursive call to find the best move for the opponent
+        if score > max_score: # If the score is greater than the current max score
+            max_score = score # Update the maximum score
+            if search_depth == max_depth: # If the search depth is at the maximum depth
+                best_moves_list = [move] # Initialize the list of best moves
+        elif score == max_score: # If the score is equal to the current max score
+            if search_depth == max_depth: # If the search depth is at the maximum depth
+                best_moves_list.append(move) # Add the move to the list of best moves
+        game_state.undo_move() # Undo the player's move to evaluate the next one
+        if max_score > alpha:  # pruning happens here
+            alpha = max_score # Update alpha to the maximum score found
+        if alpha >= beta: # If alpha is greater than or equal to beta
+            break # exit the loop (pruning)
+    if search_depth == max_depth and best_moves_list: # If there are best moves found at the maximum search depth
+        next_best_move = random.choice(best_moves_list) # Randomly select one of the best moves
+    return max_score # Return the maximum score found
+
 
 '''
 Evaluation score of the board based on material and game outcome
@@ -153,7 +194,7 @@ def board_eval_score(game_state):
 
     return eval_score # return material evaluation score
 
-# Score of material based on material advantage
+# Score of material based on material advantage alone (not used)
 def material_eval_score(board):
     eval_score = 0 # Initialize evaluation score
     # Iterate through the board and calculate the score based on piece values
