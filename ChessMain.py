@@ -2,7 +2,7 @@
 Main driver file for the Chess game. Responsible for handling user input and displaying current GameState object
 """
 import pygame as p
-import ChessEngine
+import ChessEngine, ChessAI
 
 WIDTH = 512 
 HEIGHT = 512
@@ -40,7 +40,8 @@ def main():
     click_history = [] # List to store the clicks made by the player (two tuples: [(row, col), (row, col)])
     is_game_over = False # Flag for when game ends
     promotion_pending_move = None
-    
+    human_white_player = False # Flag for white player (True if human, False if AI)
+    human_black_player = False # Flag for black player (True if human, False if AI)
     # timer bar
     white_time_seconds = 300  # 5 minutes
     black_time_seconds = 300  # 5 minutes
@@ -53,12 +54,14 @@ def main():
                 white_time_seconds -= time_delta
             else:
                 black_time_seconds -= time_delta
+        # If human player is playing, set human_turn to True
+        human_turn = (game_state.white_to_move and human_white_player) or (not game_state.white_to_move and human_black_player)
 
         for event in p.event.get():
             if event.type == p.QUIT: # Check if the user wants to quit
                 is_running = False # Set running to False to exit the loop
             elif event.type == p.MOUSEBUTTONDOWN: # Check if the user clicked the mouse
-                if not is_game_over and not promotion_pending_move:
+                if not is_game_over and not promotion_pending_move and human_turn: # If the game is not over, no promotion pending, and it's the human player's turn
                     click_position = p.mouse.get_pos() # Get the mouse (x,y) position
                     # Adjust click position for the header
                     if click_position[1] < HEADER_HEIGHT: continue
@@ -114,6 +117,14 @@ def main():
                         move_executed, should_animate, is_game_over = False, False, False
                         white_time_seconds, black_time_seconds = 300, 300
 
+        # AI move logic
+        if not is_game_over and not promotion_pending_move and not human_turn: # If the game is not over, no promotion pending, and it's the AI's turn
+            AI_move = ChessAI.best_AI_move(game_state, legal_moves) # Get the best move from the Best Move AI function
+            if AI_move is None: # If best move is none
+                AI_move = ChessAI.random_AI_move(legal_moves) # Get a random move from the Random AI function
+            game_state.make_move(AI_move) # Make the AI move in the game state
+            move_executed, should_animate = True, True # Set the flags to indicate a move has been made
+        
         if move_executed: # If a move has been made
             if should_animate: animate_move(game_state.moves_log[-1], screen, game_state.board, clock) # taking latest move and animating
             legal_moves = game_state.get_valid_moves() # Get the valid moves for the current game state
