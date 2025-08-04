@@ -116,8 +116,8 @@ class GameState():
                     self.board[move.end_row][move.end_col - 2] = self.board[move.end_row][move.end_col + 1]   # moves rook back to original position
                     self.board[move.end_row][move.end_col + 1] = '--' # Erase the earlier castled rook square
 
-            self.is_checkmate = False
-            self.is_stalemate = False
+            self.is_checkmate = False # when we undo move, we are not in checkmate anymore
+            self.is_stalemate = False # when we undo move, we are not in stalemate anymore
 
     def update_castling_rights(self, move):
         # Update the castle rights given the move
