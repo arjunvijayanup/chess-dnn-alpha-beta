@@ -106,7 +106,7 @@ def main():
         
         # AI move logic
         if not is_game_over and not promotion_pending_move and not human_turn: # If the game is not over, no promotion pending, and it's the AI's turn
-            AI_move = ChessAI.get_best_minimax_move(game_state, legal_moves) # Get the best move from the Best Move AI function
+            AI_move = ChessAI.get_best_move(game_state, legal_moves) # Get the best move from the Best Move AI function
             if AI_move is None: # If best move is none
                 AI_move = ChessAI.random_AI_move(legal_moves) # Get a random move from the Random AI function
             game_state.make_move(AI_move) # Make the AI move in the game state
