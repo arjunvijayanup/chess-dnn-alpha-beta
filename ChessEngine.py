@@ -340,26 +340,26 @@ class GameState():
                 if self.board[row + moveAmount][col - 1][0] == opponent_color:
                     move_list.append(Move((row, col), (row + moveAmount, col - 1), self.board))
                 if (row + moveAmount, col - 1) == self.en_passant_possible:
-                    attackingPiece = blockingPiece = False
+                    square_under_attack = has_blocking_piece = False
                     if kingRow == row:
                         if kingCol < col: # king is left of the pawn
                             # inside: between king and the pawn
                             # outside: between pawn and border
-                            insideRange = range(kingCol + 1, col)
+                            insideRange = range(kingCol + 1, col-1)
                             outsideRange = range(col + 1, 8)
                         else: # king right of the pawn
                             insideRange = range(kingCol -1, col, -1)
                             outsideRange = range(col - 2, -1, -1)
                         for i in insideRange:
                             if self.board[row][i] != "--":    # some piece beside en-passant pawn blocks
-                                blockingPiece = True
+                                has_blocking_piece = True
                         for i in outsideRange:
                             square = self.board[row][i]
                             if square[0] == opponent_color and (square[1] == "R" or square[1] == "Q"):
-                                attackingPiece = True
-                            elif square != "--":
-                                blockingPiece = True
-                    if not attackingPiece or blockingPiece:
+                                square_under_attack = True
+                            elif square != "--": # some piece blocks the en-passant capture (not blank square)
+                                has_blocking_piece = True
+                    if not square_under_attack or has_blocking_piece: # if square is not under attack or has blocking piece
                         move_list.append(Move((row, col), (row + moveAmount, col - 1), self.board, is_en_passant=True))
 
         if col+1 <= 7: # captures to the right
@@ -367,7 +367,7 @@ class GameState():
                 if self.board[row + moveAmount][col + 1][0] == opponent_color:
                     move_list.append(Move((row, col), (row + moveAmount, col + 1), self.board))
                 if (row + moveAmount, col + 1) == self.en_passant_possible:
-                    attackingPiece = blockingPiece = False
+                    square_under_attack = has_blocking_piece = False
                     if kingRow == row:
                         if kingCol < col: # king is left of the pawn
                             # inside: between king and the pawn
@@ -375,18 +375,18 @@ class GameState():
                             insideRange = range(kingCol + 1, col)
                             outsideRange = range(col + 2, 8)
                         else: # king right of the pawn
-                            insideRange = range(kingCol - 1, col, -1)
+                            insideRange = range(kingCol - 1, col + 1, -1)
                             outsideRange = range(col - 1, -1, -1)
                         for i in insideRange:
                             if self.board[row][i] != "--":    # some piece beside en-passant pawn blocks
-                                blockingPiece = True
+                                has_blocking_piece = True
                         for i in outsideRange:
                             square = self.board[row][i]
                             if square[0] == opponent_color and (square[1] == "R" or square[1] == "Q"):
-                                attackingPiece = True
+                                square_under_attack = True
                             elif square != "--":
-                                blockingPiece = True
-                    if not attackingPiece or blockingPiece:
+                                has_blocking_piece = True
+                    if not square_under_attack or has_blocking_piece:
                         move_list.append(Move((row, col), (row + moveAmount, col + 1), self.board, is_en_passant=True))
 
     def get_rook_moves(self, row, col, move_list):
