@@ -133,7 +133,7 @@ def best_move_by_material(game_state, legal_moves):
 '''
 Helper function to make first recursive call to best move function
 '''
-def get_best_move( game_state, legal_moves):
+def get_best_move( game_state, legal_moves, return_queue):
     global next_best_move, function_calls # Initialize the next best move to None and function calls to 0
     next_best_move = None # Initialize the next best move to None
     function_calls = 0 # Initialize the function calls to 0
@@ -143,8 +143,7 @@ def get_best_move( game_state, legal_moves):
     # negamax_search(game_state, legal_moves, max_depth, turn_multiplier) 
     negamax_alpha_beta_search(game_state, legal_moves, max_depth, -checkmate_score, checkmate_score, turn_multiplier) # Recursive function to find the best move (pass maximum alpha beta)
     print(f"Number of function calls made: {function_calls}") # check performance of the algorithm
-    return next_best_move # return the best move found by the minimax algorithm
-
+    return return_queue.put(next_best_move) # Return the next best move found by the algorithm
 '''
 Minimax algorithm to find the best move (recursive function)
 '''

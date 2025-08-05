@@ -3,6 +3,7 @@ Main driver file for the Chess game. Responsible for handling user input and dis
 """
 import pygame as p
 import ChessEngine, ChessAI
+from multiprocessing import Process, Queue
 
 BOARD_WIDTH = BOARD_HEIGHT = 512
 MOVE_LOG_SECTION_WIDTH = 256
@@ -44,6 +45,9 @@ def main():
     promotion_pending_move = None
     human_white_player = False # Flag for white player (True if human, False if AI)
     human_black_player = False # Flag for black player (True if human, False if AI)
+    AI_thinking = False # Flag for AI thinking (True if AI is thinking, False if not)
+    AI_thinking_process = None # Process for AI move finding
+    move_undone = False # Flag for move undoing (True if move is undone, False if not)
 
     while is_running:
         clock.tick(MAX_FPS)
@@ -54,7 +58,7 @@ def main():
             if event.type == p.QUIT: # Check if the user wants to quit
                 is_running = False # Set running to False to exit the loop
             elif event.type == p.MOUSEBUTTONDOWN: # Check if the user clicked the mouse
-                if not is_game_over and not promotion_pending_move and human_turn: # If the game is not over, no promotion pending, and it's the human player's turn
+                if not is_game_over and not promotion_pending_move: # If the game is not over, no promotion pending, process the mouse click
                     click_position = p.mouse.get_pos() # Get the mouse (x,y) position
                     clicked_col = click_position[0] // SQ_SIZE # Calculate the column based on mouse position
                     clicked_row = click_position[1] // SQ_SIZE # Calculate the row based on mouse position
@@ -65,7 +69,7 @@ def main():
                         selected_square = (clicked_row, clicked_col) # Update the selected square
                         click_history.append(selected_square) # Add the selected square to player clicks
                     
-                    if len(click_history) == 2: # If two squares are selected (After the 2nd click)
+                    if len(click_history) == 2 and human_turn: # Process move if two squares are selected and it's human's turn (after 2nd click)
                         move = ChessEngine.Move(click_history[0], click_history[1], game_state.board)
                         print(move.get_chess_notation()) # Print the move in chess notation (for debugging purposes)
                         move_found = False
@@ -97,28 +101,48 @@ def main():
                         move_executed, should_animate = True, True
                         promotion_pending_move, selected_square, click_history = None, (), []
                 else:
-                    if event.key == p.K_z: # If 'z' key is pressed
+                    if event.key == p.K_z: # If 'z' key is pressed 
                         game_state.undo_move() # Undo the last move made in the game state
                         move_executed, should_animate, is_game_over = True, False, False
                         legal_moves = game_state.get_valid_moves()
+                        selected_square, click_history = (), [] # Undo any square selections
+                        if AI_thinking:
+                            AI_thinking_process.terminate() # Terminate the AI move finding process if it is running
+                            AI_thinking = False # Reset the AI thinking flag if AI was thinking
+                        move_undone = True # Set the move undone flag to True
                     if event.key == p.K_r: # if 'r' key is pressed
                         game_state = ChessEngine.GameState() # Reinitiating Gamestate
                         legal_moves = game_state.get_valid_moves()
                         selected_square, click_history = (), [] # Undo any square selections
                         move_executed, should_animate, is_game_over = False, False, False
+                        move_undone = False # Reset the move undone flag
         
         # AI move logic
-        if not is_game_over and not promotion_pending_move and not human_turn: # If the game is not over, no promotion pending, and it's the AI's turn
-            AI_move = ChessAI.get_best_move(game_state, legal_moves) # Get the best move from the Best Move AI function
-            if AI_move is None: # If best move is none
-                AI_move = ChessAI.random_AI_move(legal_moves) # Get a random move from the Random AI function
-            game_state.make_move(AI_move) # Make the AI move in the game state
-            move_executed, should_animate = True, True # Set the flags to indicate a move has been made
+        if not is_game_over and not promotion_pending_move and not human_turn and not move_undone: # If the game is not over, no promotion pending, and it's the AI's turn
+            if not AI_thinking:
+                AI_thinking = True
+                print("AI is thinking...") # Print AI is thinking message
+                return_queue = Queue() # queue to track the best move from the AI within each thread and pass data between threads
+                AI_thinking_process = Process(target=ChessAI.get_best_move, args=(game_state, legal_moves, return_queue))
+                AI_thinking_process.start() # Start the AI move finding process
+            if not AI_thinking_process.is_alive(): # If the AI move finding process is still running
+                print("AI finished thinking.") # Print AI finished thinking message
+                if not return_queue.empty(): # If the return queue is not empty
+                    AI_move = return_queue.get() # Get the best move from the AI
+                else:
+                    AI_move = None # If the return queue is empty, set AI_move to None
+                if AI_move is None: # If best move is none
+                    AI_move = ChessAI.random_AI_move(legal_moves) # Get a random move from the Random AI function
+                game_state.make_move(AI_move) # Make the AI move in the game state
+                move_executed, should_animate = True, True # Set the flags to indicate a move has been made
+                AI_thinking = False # Reset the AI thinking flag
+
         
         if move_executed: # If a move has been made
             if should_animate: animate_move(game_state.moves_log[-1], screen, game_state.board, clock) # taking latest move and animating
             legal_moves = game_state.get_valid_moves() # Get the valid moves for the current game state
             move_executed, should_animate = False, False # Reset the flags
+            move_undone = False # Reset the move undone flag
 
         draw_game_state(screen, game_state, legal_moves, selected_square, promotion_pending_move, move_log_font)
         

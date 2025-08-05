@@ -219,7 +219,7 @@ class GameState():
             return self.is_square_under_attack(self.black_king_pos[0], self.black_king_pos[1])
 
     def is_square_under_attack(self, row, col):
-        # Determine if the enemy can attack the square at (row, col))
+        # Determine if the enemy can attack the square at (row, col)
         self.white_to_move = not self.white_to_move  # Switch to the opponent's turn
         opponent_moves = self.get_all_possible_moves()  # Get all possible moves for the opponent
         self.white_to_move = not self.white_to_move  # Switch back to the current player's turn
@@ -233,9 +233,9 @@ class GameState():
         move_list = []  # List to store all possible moves
         for row in range(len(self.board)): # Loop through each row
             for col in range(len(self.board[row])):  # Loop through each column in the row
-                piece_color = self.board[row][col][0]  # Get the color of the piece at (row, col))
+                piece_color = self.board[row][col][0]  # Get the color of the piece at (row, col)
                 if (piece_color =='w' and self.white_to_move) or (piece_color == 'b' and not self.white_to_move):  # Check if it's the player's turn
-                    piece_char = self.board[row][col][1]   # Get the piece type at (row, col))
+                    piece_char = self.board[row][col][1]   # Get the piece type at (row, col)
                     self.move_function_map[piece_char](row, col, move_list)  # Call the appropriate move function for the piece
         return move_list  # Return the list of all possible moves
 
@@ -401,7 +401,7 @@ class GameState():
                     self.pinned_pieces.remove(self.pinned_pieces[i])
                 break
 
-        # Get all possible moves for a rook at (row, col)) and add them to the moves list
+        # Get all possible moves for a rook at (row, col) and add them to the moves list
         directions = ((1, 0), (-1, 0), (0, 1), (0, -1))  # Down, Up, Right, Left
         opponent_color = 'b' if self.white_to_move else 'w'  # Determine the opponent's color
         for direction in directions:  # Loop through each direction
@@ -429,7 +429,7 @@ class GameState():
                 self.pinned_pieces.remove(self.pinned_pieces[i])
                 break
 
-        # Get all possible moves for a knight at (row, col)) and add them to the moves list
+        # Get all possible moves for a knight at (row, col) and add them to the moves list
         knight_offsets = ((2, 1), (2, -1), (-2, 1), (-2, -1),
                          (1, 2), (1, -2), (-1, 2), (-1, -2))
         # Knight can move in an "L" shape, so we define the possible moves
@@ -453,7 +453,7 @@ class GameState():
                 self.pinned_pieces.remove(self.pinned_pieces[i])
                 break
 
-        # Get all possible moves for a bishop at (row, col)) and add them to the moves list
+        # Get all possible moves for a bishop at (row, col) and add them to the moves list
         directions = ((1, 1), (1, -1), (-1, 1), (-1, -1))  # Down-Right, Down-Left, Up-Right, Up-Left
         opponent_color = 'b' if self.white_to_move else 'w'  # Determine the opponent's color
         for direction in directions:  # Loop through each direction
@@ -474,7 +474,7 @@ class GameState():
                     break   # Stop checking further in this direction
 
     def get_queen_moves(self, row, col, move_list):
-        # Get all possible moves for a queen at (row, col)) and add them to the moves list
+        # Get all possible moves for a queen at (row, col) and add them to the moves list
         # A queen can move like both a rook and a bishop, so we combine their movement logic
         self.get_rook_moves(row, col, move_list)  # Use rook's movement logic
         self.get_bishop_moves(row, col, move_list)  # Use bishop's movement logic
