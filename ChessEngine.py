@@ -59,7 +59,7 @@ class GameState():
         if move.moved_piece[1] == 'p' and abs(move.start_row - move.end_row) == 2:
             self.en_passant_possible = ((move.end_row + move.start_row)//2, move.start_col)
         else:
-            self.en_passant_possible = ()
+            self.en_passant_possible = () # resetting en-passant square if pawn did not move two squares
         # If en-passant move done, must update the board to capture the pawn
         if move.is_en_passant:
             self.board[move.start_row][move.end_col] = "--"
@@ -77,7 +77,7 @@ class GameState():
                 self.board[move.end_row][move.end_col + 1] = self.board[move.end_row][move.end_col - 2]   # moves rook after castling
                 self.board[move.end_row][move.end_col - 2] = '--' # Erase the old rook
 
-        self.en_passant_log.append(self.en_passant_possible)
+        self.en_passant_log.append(self.en_passant_possible) # Keeping track of the en-passant square changes
 
         # Updating castling rights - whenever rook or king moves
         self.update_castling_rights(move)
@@ -102,8 +102,8 @@ class GameState():
                 self.board[move.end_row][move.end_col] = "--" # remvoing pawn added in the wrong square
                 self.board[move.start_row][move.end_col] = move.captured_piece   # puts the pawn back into the square it was captured from
             # Undo en-passant rights
-            self.en_passant_log.pop()
-            self.en_passant_possible = self.en_passant_log[-1]
+            self.en_passant_log.pop() # Getting rid of the new en-passant square from the move we are undoing
+            self.en_passant_possible = self.en_passant_log[-1] # Setting current en-passant square to the last one in the list
             # Undo castling rights
             self.castling_rights_log.pop()  # Getting rid of the new castle rihts from the move we are undoing
             self.castling_rights_current =  self.castling_rights_log[-1] # Setting current castling rights to the last one in the list
@@ -568,8 +568,7 @@ class Move():
         if is_en_passant:
             # en-passant only captures opposite colored pawn
             self.captured_piece = 'wp' if self.moved_piece == 'bp' else 'bp'
-        # Castle Move
-        self.isCapture = self.captured_piece != '--'
+        self.is_captured = self.captured_piece != '--' # If a piece is captured, it is not an empty square
         # Unique ID for the move based on start and end positions
         self.unique_id = self.start_row * 1000 + self.start_col * 100 + self.end_row * 10 + self.end_col
 
@@ -589,3 +588,26 @@ class Move():
     def get_rank_file(self, row, col):
         # Converts board row and column indices to chess notation (e.g., (0, 0) -> 'a8')
         return self.colsToFiles[col] + self.rowsToRanks[row]
+    
+    """
+    Overriding string representation of the move in chess notation.
+    """
+    def __str__(self):
+        
+        # Castling move
+        if self.is_castling_move:
+            return "O-O" if self.end_col == 6 else "O-O-O"
+        end_square = self.get_rank_file(self.end_row, self.end_col) # Get the end square in chess notation
+        
+        # Pawn moves
+        if self.moved_piece[1] == 'p':
+            if self.is_captured:
+                return self.colsToFiles[self.start_col] + 'x' + end_square
+            else:
+                return end_square
+
+        # Other piece moves
+        move_string = self.moved_piece[1] # Get the piece type
+        if self.is_captured: # If a piece is captured, add 'x' to the move string
+            move_string += 'x' 
+        return move_string + end_square  # Return the move string in chess notation
