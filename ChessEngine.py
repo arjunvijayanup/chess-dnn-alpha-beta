@@ -66,6 +66,7 @@ class GameState():
         
         # if pawn promotion changed piece
         if move.is_pawn_promotion:
+            move.promotion_choice = promotion_choice # Storing promotion choice for chess notation
             self.board[move.end_row][move.end_col] = move.moved_piece[0] + promotion_choice
 
         # Castling move
@@ -572,6 +573,11 @@ class Move():
         # Unique ID for the move based on start and end positions
         self.unique_id = self.start_row * 1000 + self.start_col * 100 + self.end_row * 10 + self.end_col
 
+        # Attributes for notation in move log panel
+        self.promotion_choice = None    # Pawn promotion choice
+        self.is_in_check = False    # If the move results in check
+        self.is_checkmate = False   # If the move results in checkmate
+
 
     def __eq__(self, other):
         # Check if two Move objects are equal based on their start and end positions
@@ -597,17 +603,32 @@ class Move():
         # Castling move
         if self.is_castling_move:
             return "O-O" if self.end_col == 6 else "O-O-O"
+        
         end_square = self.get_rank_file(self.end_row, self.end_col) # Get the end square in chess notation
+        move_string = ''  # Initialize the move string
         
         # Pawn moves
         if self.moved_piece[1] == 'p':
             if self.is_captured:
-                return self.colsToFiles[self.start_col] + 'x' + end_square
+                move_string = self.colsToFiles[self.start_col] + 'x' + end_square
             else:
-                return end_square
-
-        # Other piece moves
-        move_string = self.moved_piece[1] # Get the piece type
-        if self.is_captured: # If a piece is captured, add 'x' to the move string
-            move_string += 'x' 
-        return move_string + end_square  # Return the move string in chess notation
+                move_string = end_square
+            # Pawn promotion
+            if self.is_pawn_promotion and self.promotion_choice:
+                move_string += '=' + self.promotion_choice
+        else:
+            # Other piece moves
+            move_string = self.moved_piece[1] # Get the piece type
+            if self.is_captured:
+                move_string += 'x'
+            move_string += end_square    #Return the move string in chess notation
+    
+        # Checkmate
+        if self.is_checkmate:
+            move_string += '#'
+        # Check
+        elif self.is_in_check:
+            move_string += '+'
+        
+        return move_string
+        

@@ -1,5 +1,5 @@
 import random
-def random_best_move(legal_moves):
+def random_AI_move(legal_moves):
     # Random AI move selection
     return legal_moves[random.randint(0, len(legal_moves) - 1)]
 

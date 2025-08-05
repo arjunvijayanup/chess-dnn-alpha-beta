@@ -6,7 +6,7 @@ import ChessEngine, ChessAI
 from multiprocessing import Process, Queue
 
 BOARD_WIDTH = BOARD_HEIGHT = 512
-MOVE_LOG_SECTION_WIDTH = 256
+MOVE_LOG_SECTION_WIDTH = 300
 MOVE_LOG_SECTION_HEIGHT = BOARD_HEIGHT
 DIMENSION = 8
 SQ_SIZE = BOARD_HEIGHT // DIMENSION
@@ -33,7 +33,7 @@ def main():
     legal_moves = game_state.get_valid_moves() # Get the valid moves for the current game state
     move_executed = False # Flag Variable to check if a move has been made
     should_animate = False # Flag variable to check when to animate a move
-    move_log_font = p.font.SysFont("Arial", 13, False, False) # Font for the move log (arial 11 size, not bold, not italic)
+    move_log_font = p.font.SysFont("Arial", 12, False, False) # Font for the move log (arial 11 size, not bold, not italic)
     endgame_text_font = p.font.SysFont("Helvitca", 32, True, False) # Bold, not italic, 32 size, Helvetica
 
     p.display.set_caption("Chess") # Set the window title
@@ -141,6 +141,15 @@ def main():
         if move_executed: # If a move has been made
             if should_animate: animate_move(game_state.moves_log[-1], screen, game_state.board, clock) # taking latest move and animating
             legal_moves = game_state.get_valid_moves() # Get the valid moves for the current game state
+            
+            # Setting check and checkmate flags for the last move in move log (for Move log panel Chess Notation)
+            if game_state.moves_log: # If there are moves in the move log
+                last_move = game_state.moves_log[-1]
+                if game_state.is_in_check: # If the last move resulted in check
+                    last_move.is_in_check = True
+                if game_state.is_checkmate: # If the last move resulted in checkmate
+                    last_move.is_checkmate = True
+            
             move_executed, should_animate = False, False # Reset the flags
             move_undone = False # Reset the move undone flag
 
@@ -223,6 +232,7 @@ Draws the move log text on the screen
 def draw_move_log(screen, game_state, font):
     move_log_section_rect = p.Rect(BOARD_WIDTH, 0, MOVE_LOG_SECTION_WIDTH, MOVE_LOG_SECTION_HEIGHT) # Create a rectangle for the move log section
     p.draw.rect(screen, p.Color('grey'), move_log_section_rect)  # Draw the white section for the move log
+    p.draw.rect(screen, p.Color('black'), move_log_section_rect, 2)  # Draw the border for the move log section
     move_log = game_state.moves_log  # Get the move log from the game state
     move_texts = []  # List to store the text for each move
     move_text_x_padding = move_text_y_padding = 5 # Initial Padding for the text in the move log section
