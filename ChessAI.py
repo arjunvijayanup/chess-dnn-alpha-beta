@@ -7,9 +7,87 @@ def random_best_move(legal_moves):
 piece_scores = { "K" : 0,
                  "Q" : 10,
                  "R" : 5,
-                 "B" : 3,
+                 "B" : 3.25,
                  "N" : 3,
                  "p" : 1 }
+
+# 2D arrays of positional scores for each piece type
+# These scores are designed to encourage good piece placement and control of the board
+knight_pos_scores = [ #knight needs to be placed in the center of the board to control more squares
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 2, 2, 2, 2, 2, 2, 1],
+    [1, 2, 3, 3, 3, 3, 2, 1],
+    [1, 3, 4, 3, 3, 4, 3, 1],
+    [1, 2, 3, 4, 4, 3, 2, 1],
+    [1, 2, 3, 3, 3, 3, 2, 1],
+    [1, 2, 2, 2, 2, 2, 2, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1]
+]
+
+queen_pos_scores = [ # more open files and center control is better for queen
+    [1, 1, 1, 3, 1, 1, 1, 1],
+    [1, 2, 3, 3, 3, 3, 2, 1],
+    [1, 4, 3, 3, 3, 3, 4, 1],
+    [1, 2, 3, 3, 3, 3, 2, 1],
+    [1, 2, 3, 3, 3, 3, 2, 1],
+    [1, 4, 3, 3, 3, 3, 4, 1],
+    [1, 2, 3, 3, 3, 3, 2, 1],
+    [1, 1, 1, 3, 1, 1, 1, 1]
+]
+
+bishop_pos_scores = [ # Bishops are rewarded for central open-diagonal positions that maximize control of their own square color
+    [4, 3, 2, 1, 1, 2, 3, 4],
+    [3, 4, 3, 2, 2, 3, 4, 3],
+    [2, 3, 4, 3, 3, 4, 3, 2],
+    [1, 2, 3, 4, 4, 3, 2, 1],
+    [1, 2, 3, 4, 4, 3, 2, 1],
+    [2, 3, 4, 3, 3, 4, 3, 2],
+    [3, 4, 3, 2, 2, 3, 4, 3],
+    [4, 3, 2, 1, 1, 2, 3, 4]
+]
+
+rook_pos_scores = [ # Rooks get higher scores for open files and central squares helping them move and work together better
+    [4, 3, 4, 4, 4, 4, 3, 4],
+    [4, 4, 4, 4, 4, 4, 4, 4],
+    [1, 1, 2, 3, 3, 2, 1, 1],
+    [1, 2, 3, 4, 4, 3, 2, 1],
+    [1, 2, 3, 4, 4, 3, 2, 1],
+    [1, 1, 2, 3, 3, 2, 1, 1],
+    [4, 4, 4, 4, 4, 4, 4, 4],
+    [4, 3, 4, 4, 4, 4, 3, 4]
+]
+
+white_pawn_pos_scores = [ # Reward passed pawns and pawns in the center of the board from white's perspective
+    [8, 8, 8, 8, 8, 8, 8, 8],
+    [8, 8, 8, 8, 8, 8, 8, 8],
+    [5, 6, 6, 7, 7, 6, 6, 5],
+    [2, 3, 3, 5, 5, 3, 3, 2],
+    [1, 2, 3, 4, 4, 3, 2, 1],
+    [1, 1, 2, 3, 3, 2, 1, 1],
+    [1, 1, 1, 0, 0, 1, 1, 1],
+    [0, 0, 0, 0, 0, 0, 0, 0]
+]
+
+black_pawn_pos_scores = [ # Reward passed pawns and pawns in the center of the board from black's perspective
+    [0, 0, 0, 0, 0, 0, 0, 0],
+    [1, 1, 1, 0, 0, 1, 1, 1],
+    [1, 1, 2, 3, 3, 2, 1, 1],
+    [1, 2, 3, 4, 4, 3, 2, 1],
+    [2, 3, 3, 5, 5, 3, 3, 2],
+    [5, 6, 6, 7, 7, 6, 6, 5],
+    [8, 8, 8, 8, 8, 8, 8, 8],
+    [8, 8, 8, 8, 8, 8, 8, 8]
+]
+
+position_scores = {
+    "N": knight_pos_scores,
+    "Q": queen_pos_scores,
+    "B": bishop_pos_scores,
+    "R": rook_pos_scores,
+    "bp": white_pawn_pos_scores,
+    "wp": black_pawn_pos_scores
+}
+
 checkmate_score = 1000
 stalemate_score = 0
 max_depth = 3 # set global variable for search depth
@@ -171,10 +249,9 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth, alpha, beta
 
 
 '''
-Evaluation score of the board based on material and game outcome
+Evaluation score of the board based on material, game outcome and positional advantage
 Here positive score is good for white and a negative score is good for black
 '''
-
 def board_eval_score(game_state):
     if game_state.is_checkmate: # If the game is checkmate
         if game_state.white_to_move: # If it's white's turn and the game is checkmate
@@ -183,16 +260,26 @@ def board_eval_score(game_state):
             return checkmate_score   # white wins
     elif game_state.is_stalemate: # If the game is in stalemate
         return stalemate_score
-
+    
     eval_score = 0  # Initialize material evaluation score
-    for row in game_state.board: # Loop through each row of the chess board
-        for square in row: # Loop through each square in the current row
-            if square[0] == 'w': # If the piece on this square is White
-                eval_score += piece_scores[square[1]] # Add the value of this White piece to the evaluation score
-            elif square[0] == 'b': # If the piece on this square is Black
-                eval_score -= piece_scores[square[1]] # Subtract the value of this Black piece from the evaluation score
-
-    return eval_score # return material evaluation score
+    # Loop through every square on the board
+    for row in range(len(game_state.board)): # 
+        for col in range(len(game_state.board[row])):
+            square = game_state.board[row][col] # get the piece on the square
+            if square != "--": # Only evaluate if piece present
+                position_score = 0 # initialize positional bonus/penalty
+                if square[1] != "K":  # Don't give positional scores to the king
+                    if square[1] == "p":  # If it's a pawn use pawn-specific table (for its color)
+                        position_score = position_scores[square][row][col] # get position score based on piece
+                    else: # other pieces
+                        position_score = position_scores[square[1]][row][col]
+                # Add the piece value and positional score to the evaluation score
+                # If it's white's turn, add the piece value and positional score, else subtract it
+                if square[0] == 'w':
+                    eval_score += piece_scores[square[1]] + position_score * 0.1
+                elif square[0] == 'b':
+                    eval_score -= piece_scores[square[1]] + position_score * 0.1
+    return eval_score
 
 # Score of material based on material advantage alone (not used)
 def material_eval_score(board):
