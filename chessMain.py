@@ -2,7 +2,7 @@
 Main driver file for the Chess game. Responsible for handling user input and displaying current GameState object
 """
 import pygame as p
-import ChessEngine, ChessAI
+import chessEngine, chessAI
 from multiprocessing import Process, Queue
 
 BOARD_WIDTH = BOARD_HEIGHT = 512
@@ -29,7 +29,7 @@ def main():
     p.init() # Initialize the pygame module
     screen = p.display.set_mode((BOARD_WIDTH + MOVE_LOG_SECTION_WIDTH, BOARD_HEIGHT)) # Set the window size
     clock = p.time.Clock() # Create a clock object
-    game_state = ChessEngine.GameState() # Create a GameState object calling the Gamestate __init_ method
+    game_state = chessEngine.GameState() # Create a GameState object calling the Gamestate __init_ method
     legal_moves = game_state.get_valid_moves() # Get the valid moves for the current game state
     move_executed = False # Flag Variable to check if a move has been made
     should_animate = False # Flag variable to check when to animate a move
@@ -70,7 +70,7 @@ def main():
                         click_history.append(selected_square) # Add the selected square to player clicks
                     
                     if len(click_history) == 2 and human_turn: # Process move if two squares are selected and it's human's turn (after 2nd click)
-                        move = ChessEngine.Move(click_history[0], click_history[1], game_state.board)
+                        move = chessEngine.Move(click_history[0], click_history[1], game_state.board)
                         print(move.get_chess_notation()) # Print the move in chess notation (for debugging purposes)
                         move_found = False
                         for move_index in range(len(legal_moves)):
@@ -111,7 +111,7 @@ def main():
                             AI_thinking = False # Reset the AI thinking flag if AI was thinking
                         move_undone = True # Set the move undone flag to True
                     if event.key == p.K_r: # if 'r' key is pressed
-                        game_state = ChessEngine.GameState() # Reinitiating Gamestate
+                        game_state = chessEngine.GameState() # Reinitiating Gamestate
                         legal_moves = game_state.get_valid_moves()
                         selected_square, click_history = (), [] # Undo any square selections
                         move_executed, should_animate, is_game_over = False, False, False
@@ -123,7 +123,7 @@ def main():
                 AI_thinking = True
                 print("AI is thinking...") # Print AI is thinking message
                 return_queue = Queue() # queue to track the best move from the AI within each thread and pass data between threads
-                AI_thinking_process = Process(target=ChessAI.get_best_move, args=(game_state, legal_moves, return_queue))
+                AI_thinking_process = Process(target=chessAI.get_best_move, args=(game_state, legal_moves, return_queue))
                 AI_thinking_process.start() # Start the AI move finding process
             if not AI_thinking_process.is_alive(): # If the AI move finding process is still running
                 print("AI finished thinking.") # Print AI finished thinking message
@@ -132,7 +132,7 @@ def main():
                 else:
                     AI_move = None # If the return queue is empty, set AI_move to None
                 if AI_move is None: # If best move is none
-                    AI_move = ChessAI.random_AI_move(legal_moves) # Get a random move from the Random AI function
+                    AI_move = chessAI.random_AI_move(legal_moves) # Get a random move from the Random AI function
                 game_state.make_move(AI_move) # Make the AI move in the game state
                 move_executed, should_animate = True, True # Set the flags to indicate a move has been made
                 AI_thinking = False # Reset the AI thinking flag
