@@ -207,7 +207,7 @@ def main():
                         move_executed, should_animate, is_game_over = False, False, False
                         move_undone = False # Reset the move undone flag
         
-        # AI move logic:  White’s turn -> our AI (multiprocessing)
+        # AI move logic:  custom AI (multiprocessing)
         if not stockfish_turn and not is_game_over and not promotion_pending_move and not human_turn and not move_undone: # If the game is not over, no promotion pending, and it's our AI's turn
             if not AI_thinking:
                 AI_thinking = True
@@ -227,8 +227,8 @@ def main():
                 move_executed, should_animate = True, True # Set the flags to indicate a move has been made
                 AI_thinking = False # Reset the AI thinking flag
         
-        # AI move logic:  Black’s turn -> Stockfish
-        elif stockfish_turn and not is_game_over and not promotion_pending_move and not human_turn and not move_undone:
+        # AI move logic:  Stockfish
+        elif stockfish_turn and not is_game_over and not promotion_pending_move and not human_turn:
             print("Stockfish is thinking...")
             fen   = game_state_to_fen(game_state)
             board = chess.Board(fen)
