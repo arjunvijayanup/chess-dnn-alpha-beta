@@ -21,6 +21,7 @@ MAX_FPS = 20
 IMAGES = {}
 STOCKFISH_ENGINE_DEPTH  = 3 # if used for comparison with Stockfish
 
+
 # Who's playing?: Human and/or AI (can be stockg=fish or custom AI) players
 human_white_player = False # Flag for white player (True if human, False if AI)
 human_black_player = False # Flag for black player (True if human, False if AI)
@@ -33,26 +34,20 @@ assert not (human_black_player and stockfish_black_player), "Black player cannot
 # Get the directory of the current file
 base_dir = os.path.dirname(os.path.abspath(__file__))
 
-# Set up Stockfish engine path and depth for AI comparison (if enabled)
+# Set up Stockfish engine path and depth for AI comparison (if enabled, available only for Windows and macOS)
 # Stockfish was downloaded from https://stockfishchess.org/download/
 if stockfish_white_player or stockfish_black_player:
     # Detect OS
     system = platform.system()  # Windows, Linux, or Darwin (macOS)
     if system == "Windows":
         # .exe location
-        STOCKFISH_PATH = os.path.join(base_dir, "stockfish\stockfish-windows-x86-64-avx2.exe") # Path to the Stockfish engine executable
-
-    elif system == "Linux":
-        # x86_64 vs. arm64 (aka aarch64)
-        machine = platform.machine().lower()
-        if "arm" in machine or "aarch" in machine:
-            STOCKFISH_PATH = os.path.join(base_dir, "stockfish\stockfish-android-armv8", "stockfish")
-        else:
-            STOCKFISH_PATH = os.path.join(base_dir, "stockfish\stockfish-ubuntu-x86-64-avx2", "stockfish")
+        STOCKFISH_PATH = os.path.join(base_dir, "stockfish/stockfish-windows-x86-64-avx2.exe") # Path to the Stockfish engine executable
 
     elif system == "Darwin":
-        # macOS (assume Apple-Silicon—if you have an Intel build, swap in its folder/name)
-        STOCKFISH_PATH = os.path.join(base_dir, "stockfish\stockfish-macos-m1-apple-silicon", "stockfish")
+        print("Detected macOS system.")
+        # macOS (Apple-Silicon chip)
+        # This will require changes to Privacy & Security settings to allow the app to run
+        STOCKFISH_PATH = os.path.join(base_dir, "stockfish/stockfish-macos-m1-apple-silicon")
 
     else:
         raise RuntimeError(f"Unsupported OS: {system!r}")
@@ -138,7 +133,9 @@ def main():
     AI_thinking = False # Flag for AI thinking (True if AI is thinking, False if not)
     AI_process = None # Process for AI move finding
     move_undone = False # Flag for move undoing (True if move is undone, False if not)
-    stockfish_engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
+    if(stockfish_white_player or stockfish_black_player): 
+        stockfish_engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
+
 
     while is_running:
         clock.tick(MAX_FPS)
