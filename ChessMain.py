@@ -232,7 +232,7 @@ Draws the move log text on the screen
 def draw_move_log(screen, game_state, font):
     move_log_section_rect = p.Rect(BOARD_WIDTH, 0, MOVE_LOG_SECTION_WIDTH, MOVE_LOG_SECTION_HEIGHT) # Create a rectangle for the move log section
     p.draw.rect(screen, p.Color('grey'), move_log_section_rect)  # Draw the white section for the move log
-    p.draw.rect(screen, p.Color('black'), move_log_section_rect, 2)  # Draw the border for the move log section
+    p.draw.rect(screen, p.Color('darkgrey'), move_log_section_rect, 2)  # Draw the border for the move log section
     move_log = game_state.moves_log  # Get the move log from the game state
     move_texts = []  # List to store the text for each move
     move_text_x_padding = move_text_y_padding = 5 # Initial Padding for the text in the move log section
