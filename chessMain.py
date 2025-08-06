@@ -4,7 +4,14 @@ Main driver file for the Chess game. Responsible for handling user input and dis
 import pygame as p
 import chessEngine, chessAI
 from multiprocessing import Process, Queue
+import os
+import sys
+import chess
+import chess.engine
+import platform
+import shutil
 
+# Constants for the game
 BOARD_WIDTH = BOARD_HEIGHT = 512
 MOVE_LOG_SECTION_WIDTH = 300
 MOVE_LOG_SECTION_HEIGHT = BOARD_HEIGHT
@@ -12,15 +19,100 @@ DIMENSION = 8
 SQ_SIZE = BOARD_HEIGHT // DIMENSION
 MAX_FPS = 20
 IMAGES = {}
+STOCKFISH_ENGINE_DEPTH  = 3 # if used for comparison with Stockfish
 
+# Who's playing?: Human and/or AI (can be stockg=fish or custom AI) players
+human_white_player = False # Flag for white player (True if human, False if AI)
+human_black_player = False # Flag for black player (True if human, False if AI)
+stockfish_white_player = False # Flag for white player (True if stockfish, False if custom AI we built)
+stockfish_black_player = False # Flag for black player (True if stockfish, False if custom AI we built)
+# Validation on flags to ensure one player cannot be both human and stockfish
+assert not (human_white_player and stockfish_white_player), "White player cannot be both human and Stockfish"
+assert not (human_black_player and stockfish_black_player), "Black player cannot be both human and Stockfish"
+
+# Get the directory of the current file
+base_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Set up Stockfish engine path and depth for AI comparison (if enabled)
+# Stockfish was downloaded from https://stockfishchess.org/download/
+if stockfish_white_player or stockfish_black_player:
+    # Detect OS
+    system = platform.system()  # Windows, Linux, or Darwin (macOS)
+    if system == "Windows":
+        # .exe location
+        STOCKFISH_PATH = os.path.join(base_dir, "stockfish\stockfish-windows-x86-64-avx2.exe") # Path to the Stockfish engine executable
+
+    elif system == "Linux":
+        # x86_64 vs. arm64 (aka aarch64)
+        machine = platform.machine().lower()
+        if "arm" in machine or "aarch" in machine:
+            STOCKFISH_PATH = os.path.join(base_dir, "stockfish\stockfish-android-armv8", "stockfish")
+        else:
+            STOCKFISH_PATH = os.path.join(base_dir, "stockfish\stockfish-ubuntu-x86-64-avx2", "stockfish")
+
+    elif system == "Darwin":
+        # macOS (assume Apple-Silicon—if you have an Intel build, swap in its folder/name)
+        STOCKFISH_PATH = os.path.join(base_dir, "stockfish\stockfish-macos-m1-apple-silicon", "stockfish")
+
+    else:
+        raise RuntimeError(f"Unsupported OS: {system!r}")
+
+    # Fallback: if it’s not there or not executable try a PATH lookup
+    if not os.path.isfile(STOCKFISH_PATH) or not os.access(STOCKFISH_PATH, os.X_OK):
+        fallback = shutil.which("stockfish")
+        if fallback:
+            STOCKFISH_PATH = fallback
+        else:
+            raise FileNotFoundError(f"Could not find Stockfish binary at {STOCKFISH_PATH!r}, nor on your PATH.")
+        
 """
 Initializing global dict of images. Called once in the main
 """
 def load_images():
+    img_dir  = os.path.join(base_dir, "images_pieces") # Get the directory of the images
     pieces = ['wp', 'bp', 'wB', 'wK', 'wQ', 'wN', 'wR', 'bB', 'bK', 'bQ', 'bN', 'bR']
     for piece in pieces:
-        IMAGES[piece] = p.transform.scale(p.image.load("images_pieces/" + piece + ".png"), (SQ_SIZE, SQ_SIZE)) # Used transform.scale to make the pieces look good on the board.
+        path = os.path.join(img_dir, piece + ".png") # Construct the path to the image file
+        if not os.path.exists(path): # If the image file does not exist
+            raise FileNotFoundError(f"Missing image file: {path}")
+        IMAGES[piece] = p.transform.scale(p.image.load(path), (SQ_SIZE, SQ_SIZE)) # Used transform.scale to make the pieces look good on the board.
 # Use IMAGES['wp'] to load images
+
+"""
+FEN to Board Encoding to compare with stockfish (we need to feed our position to stockfish in fen format)
+"""
+def game_state_to_fen(game_state):
+    rows = [] # List to store each row of the FEN string
+    for row in game_state.board: # Loop through each row of the board
+        empty = 0 # Counter for empty squares in the row
+        fen_row = "" # String to store the FEN representation of the row
+        for sq in row: # Loop through each square in the row
+            if sq == "--": # If the square is empty
+                empty += 1 # Increment the empty square counter
+            else: # If the square is not empty
+                if empty: # If there are empty squares before this piece
+                    fen_row += str(empty) # Add the count of empty squares to the FEN string
+                    empty = 0 # Reset the empty square counter
+                letter = sq[1] # Get the piece letter (e.g., 'p', 'N', 'B', etc.)
+                fen_row += letter.upper() if sq[0] == 'w' else letter.lower() # Add the piece letter to the FEN string
+        if empty: # If there are empty squares at the end of the row
+            fen_row += str(empty) # Add the count of empty squares to the FEN string
+        rows.append(fen_row) #  Add the FEN representation of the row to the list
+    layout = "/".join(rows) # Join the rows to form the FEN layout
+    stm = 'w' if game_state.white_to_move else 'b' # 'w' for white's turn, 'b' for black
+    cr = "" # Castling rights string
+    crc = game_state.castling_rights_current # Current castling rights
+    if crc.white_kingside:   cr += 'K' # If white can castle kingside
+    if crc.white_queenside:  cr += 'Q' # If white can castle queenside
+    if crc.black_kingside:   cr += 'k' # If black can castle kingside
+    if crc.black_queenside:  cr += 'q' # If black can castle queenside
+    if cr == "": cr = '-' # If no castling rights, set to '-'
+    if game_state.en_passant_possible: # If en passant is possible
+        r, f = game_state.en_passant_possible # Get the row and file of the en passant square
+        ep = f"{chr(f + ord('a'))}{8 - r}" # Convert to algebraic notation (e.g., 'e3')
+    else: # If no en passant possible
+        ep = '-' # Set to '-'
+    return f"{layout} {stm} {cr} {ep} 0 1" # Return the complete FEN string
 
 """
 Initializing main. Handles user input and updating graphics
@@ -43,17 +135,16 @@ def main():
     click_history = [] # List to store the clicks made by the player (two tuples: [(row, col), (row, col)])
     is_game_over = False # Flag for when game ends
     promotion_pending_move = None
-    human_white_player = False # Flag for white player (True if human, False if AI)
-    human_black_player = False # Flag for black player (True if human, False if AI)
     AI_thinking = False # Flag for AI thinking (True if AI is thinking, False if not)
-    AI_thinking_process = None # Process for AI move finding
+    AI_process = None # Process for AI move finding
     move_undone = False # Flag for move undoing (True if move is undone, False if not)
+    stockfish_engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
 
     while is_running:
         clock.tick(MAX_FPS)
         # If human player is playing, set human_turn to True
         human_turn = (game_state.white_to_move and human_white_player) or (not game_state.white_to_move and human_black_player)
-
+        stockfish_turn = (game_state.white_to_move and stockfish_white_player) or (not game_state.white_to_move and stockfish_black_player)
         for event in p.event.get():
             if event.type == p.QUIT: # Check if the user wants to quit
                 is_running = False # Set running to False to exit the loop
@@ -107,7 +198,7 @@ def main():
                         legal_moves = game_state.get_valid_moves()
                         selected_square, click_history = (), [] # Undo any square selections
                         if AI_thinking:
-                            AI_thinking_process.terminate() # Terminate the AI move finding process if it is running
+                            AI_process.terminate() # Terminate the AI move finding process if it is running
                             AI_thinking = False # Reset the AI thinking flag if AI was thinking
                         move_undone = True # Set the move undone flag to True
                     if event.key == p.K_r: # if 'r' key is pressed
@@ -117,15 +208,15 @@ def main():
                         move_executed, should_animate, is_game_over = False, False, False
                         move_undone = False # Reset the move undone flag
         
-        # AI move logic
-        if not is_game_over and not promotion_pending_move and not human_turn and not move_undone: # If the game is not over, no promotion pending, and it's the AI's turn
+        # AI move logic:  White’s turn -> our AI (multiprocessing)
+        if not stockfish_turn and not is_game_over and not promotion_pending_move and not human_turn and not move_undone: # If the game is not over, no promotion pending, and it's our AI's turn
             if not AI_thinking:
                 AI_thinking = True
                 print("AI is thinking...") # Print AI is thinking message
                 return_queue = Queue() # queue to track the best move from the AI within each thread and pass data between threads
-                AI_thinking_process = Process(target=chessAI.get_best_move, args=(game_state, legal_moves, return_queue))
-                AI_thinking_process.start() # Start the AI move finding process
-            if not AI_thinking_process.is_alive(): # If the AI move finding process is still running
+                AI_process = Process(target=chessAI.get_best_move, args=(game_state, legal_moves, return_queue))
+                AI_process.start() # Start the AI move finding process
+            if not AI_process.is_alive(): # If the AI move finding process is still running
                 print("AI finished thinking.") # Print AI finished thinking message
                 if not return_queue.empty(): # If the return queue is not empty
                     AI_move = return_queue.get() # Get the best move from the AI
@@ -136,8 +227,24 @@ def main():
                 game_state.make_move(AI_move) # Make the AI move in the game state
                 move_executed, should_animate = True, True # Set the flags to indicate a move has been made
                 AI_thinking = False # Reset the AI thinking flag
-
         
+        # AI move logic:  Black’s turn -> Stockfish
+        elif stockfish_turn and not is_game_over and not promotion_pending_move and not human_turn and not move_undone:
+            print("Stockfish is thinking...")
+            fen   = game_state_to_fen(game_state)
+            board = chess.Board(fen)
+            result = stockfish_engine.play(board, chess.engine.Limit(depth=STOCKFISH_ENGINE_DEPTH))
+            print("Stockfish finished thinking.")
+            sfm = result.move
+            sr = 7 - (sfm.from_square // 8)
+            sc =      sfm.from_square % 8
+            er = 7 - (sfm.to_square   // 8)
+            ec =      sfm.to_square   % 8
+            sf_move = chessEngine.Move((sr, sc), (er, ec), game_state.board)
+            game_state.make_move(sf_move)
+            move_executed, should_animate = True, True
+        
+        # After any move
         if move_executed: # If a move has been made
             if should_animate: animate_move(game_state.moves_log[-1], screen, game_state.board, clock) # taking latest move and animating
             legal_moves = game_state.get_valid_moves() # Get the valid moves for the current game state
