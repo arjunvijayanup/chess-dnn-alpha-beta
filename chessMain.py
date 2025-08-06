@@ -145,6 +145,8 @@ def main():
         for event in p.event.get():
             if event.type == p.QUIT: # Check if the user wants to quit
                 is_running = False # Set running to False to exit the loop
+                if stockfish_white_player or stockfish_black_player: # If Stockfish is being used
+                    stockfish_engine.quit() # Quit the Stockfish engine
             elif event.type == p.MOUSEBUTTONDOWN: # Check if the user clicked the mouse
                 if not is_game_over and not promotion_pending_move: # If the game is not over, no promotion pending, process the mouse click
                     click_position = p.mouse.get_pos() # Get the mouse (x,y) position
