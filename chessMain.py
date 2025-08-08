@@ -22,7 +22,7 @@ IMAGES = {}
 STOCKFISH_ENGINE_DEPTH  = 3 # if used for comparison with Stockfish
 
 
-# Who's playing?: Human and/or AI (can be stockg=fish or custom AI) players
+# Who's playing?: Human and/or AI (can be stockfish or custom AI) players
 human_white_player = False # Flag for white player (True if human, False if AI)
 human_black_player = False # Flag for black player (True if human, False if AI)
 stockfish_white_player = False # Flag for white player (True if stockfish, False if custom AI we built)
@@ -73,41 +73,8 @@ def load_images():
         IMAGES[piece] = p.transform.scale(p.image.load(path), (SQ_SIZE, SQ_SIZE)) # Used transform.scale to make the pieces look good on the board.
 # Use IMAGES['wp'] to load images
 
-"""
-FEN to Board Encoding to compare with stockfish (we need to feed our position to stockfish in fen format)
-"""
-def game_state_to_fen(game_state):
-    rows = [] # List to store each row of the FEN string
-    for row in game_state.board: # Loop through each row of the board
-        empty = 0 # Counter for empty squares in the row
-        fen_row = "" # String to store the FEN representation of the row
-        for sq in row: # Loop through each square in the row
-            if sq == "--": # If the square is empty
-                empty += 1 # Increment the empty square counter
-            else: # If the square is not empty
-                if empty: # If there are empty squares before this piece
-                    fen_row += str(empty) # Add the count of empty squares to the FEN string
-                    empty = 0 # Reset the empty square counter
-                letter = sq[1] # Get the piece letter (e.g., 'p', 'N', 'B', etc.)
-                fen_row += letter.upper() if sq[0] == 'w' else letter.lower() # Add the piece letter to the FEN string
-        if empty: # If there are empty squares at the end of the row
-            fen_row += str(empty) # Add the count of empty squares to the FEN string
-        rows.append(fen_row) #  Add the FEN representation of the row to the list
-    layout = "/".join(rows) # Join the rows to form the FEN layout
-    stm = 'w' if game_state.white_to_move else 'b' # 'w' for white's turn, 'b' for black
-    cr = "" # Castling rights string
-    crc = game_state.castling_rights_current # Current castling rights
-    if crc.white_kingside:   cr += 'K' # If white can castle kingside
-    if crc.white_queenside:  cr += 'Q' # If white can castle queenside
-    if crc.black_kingside:   cr += 'k' # If black can castle kingside
-    if crc.black_queenside:  cr += 'q' # If black can castle queenside
-    if cr == "": cr = '-' # If no castling rights, set to '-'
-    if game_state.en_passant_possible: # If en passant is possible
-        r, f = game_state.en_passant_possible # Get the row and file of the en passant square
-        ep = f"{chr(f + ord('a'))}{8 - r}" # Convert to algebraic notation (e.g., 'e3')
-    else: # If no en passant possible
-        ep = '-' # Set to '-'
-    return f"{layout} {stm} {cr} {ep} 0 1" # Return the complete FEN string
+
+
 
 """
 Initializing main. Handles user input and updating graphics
@@ -222,7 +189,8 @@ def main():
                 else:
                     AI_move = None # If the return queue is empty, set AI_move to None
                 if AI_move is None: # If best move is none
-                    AI_move = chessAI.random_AI_move(legal_moves) # Get a random move from the Random AI function
+                    #print("No valid moves found by AI.") # Print no valid moves found message
+                     AI_move = chessAI.random_AI_move(legal_moves) # Get a random move from the Random AI function
                 game_state.make_move(AI_move) # Make the AI move in the game state
                 move_executed, should_animate = True, True # Set the flags to indicate a move has been made
                 AI_thinking = False # Reset the AI thinking flag
@@ -230,7 +198,7 @@ def main():
         # AI move logic:  Stockfish
         elif stockfish_turn and not is_game_over and not promotion_pending_move and not human_turn:
             print("Stockfish is thinking...")
-            fen   = game_state_to_fen(game_state)
+            fen   =  game_state.to_fen() # Convert the game state to FEN format for Stockfish
             board = chess.Board(fen)
             result = stockfish_engine.play(board, chess.engine.Limit(depth=STOCKFISH_ENGINE_DEPTH))
             print("Stockfish finished thinking.")
