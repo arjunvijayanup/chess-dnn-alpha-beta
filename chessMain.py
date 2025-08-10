@@ -5,11 +5,11 @@ import pygame as p
 import chessEngine, chessAI
 from multiprocessing import Process, Queue
 import os
-import sys
-import chess
-import chess.engine
+import chess # for Stockfish engine
+import chess.engine # for Stockfish engine
 import platform
 import shutil
+
 
 # Constants for the game
 BOARD_WIDTH = BOARD_HEIGHT = 512
@@ -20,16 +20,46 @@ SQ_SIZE = BOARD_HEIGHT // DIMENSION
 MAX_FPS = 20
 IMAGES = {}
 STOCKFISH_ENGINE_DEPTH  = 3 # if used for comparison with Stockfish
+FOOTER_HEIGHT = 20
+WINDOW_HEIGHT = BOARD_HEIGHT + FOOTER_HEIGHT
 
 
 # Who's playing?: Human and/or AI (can be stockfish or custom AI) players
-human_white_player = False # Flag for white player (True if human, False if AI)
+human_white_player = True # Flag for white player (True if human, False if AI)
 human_black_player = False # Flag for black player (True if human, False if AI)
 stockfish_white_player = False # Flag for white player (True if stockfish, False if custom AI we built)
 stockfish_black_player = False # Flag for black player (True if stockfish, False if custom AI we built)
 # Validation on flags to ensure one player cannot be both human and stockfish
 assert not (human_white_player and stockfish_white_player), "White player cannot be both human and Stockfish"
 assert not (human_black_player and stockfish_black_player), "Black player cannot be both human and Stockfish"
+
+"""
+Return the player name (Human, AI, or Stockfish) based on color and configuration.
+"""
+def get_player_name(is_white):
+    if is_white:
+        if human_white_player:
+            return "Human"
+        elif stockfish_white_player:
+            return "Stockfish"
+        else:
+            return "AI"
+    else:
+        if human_black_player:
+            return "Human"
+        elif stockfish_black_player:
+            return "Stockfish"
+        else:
+            return "AI"
+
+"""
+Set the pygame window caption based on the players.
+"""
+def set_game_caption():
+    white_player_name = get_player_name(is_white=True)
+    black_player_name = get_player_name(is_white=False)
+    caption_text = f"Chess: {white_player_name} (white) vs {black_player_name} (black)"
+    p.display.set_caption(caption_text)
 
 # Get the directory of the current file
 base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -64,24 +94,20 @@ if stockfish_white_player or stockfish_black_player:
 Initializing global dict of images. Called once in the main
 """
 def load_images():
-    img_dir  = os.path.join(base_dir, "images_pieces") # Get the directory of the images
+    img_dir = os.path.join(base_dir, "images_pieces") # Get the directory of the images
     pieces = ['wp', 'bp', 'wB', 'wK', 'wQ', 'wN', 'wR', 'bB', 'bK', 'bQ', 'bN', 'bR']
     for piece in pieces:
         path = os.path.join(img_dir, piece + ".png") # Construct the path to the image file
         if not os.path.exists(path): # If the image file does not exist
             raise FileNotFoundError(f"Missing image file: {path}")
         IMAGES[piece] = p.transform.scale(p.image.load(path), (SQ_SIZE, SQ_SIZE)) # Used transform.scale to make the pieces look good on the board.
-# Use IMAGES['wp'] to load images
-
-
-
 
 """
 Initializing main. Handles user input and updating graphics
 """
 def main():
     p.init() # Initialize the pygame module
-    screen = p.display.set_mode((BOARD_WIDTH + MOVE_LOG_SECTION_WIDTH, BOARD_HEIGHT)) # Set the window size
+    screen = p.display.set_mode((BOARD_WIDTH + MOVE_LOG_SECTION_WIDTH, WINDOW_HEIGHT)) # Set the window size
     clock = p.time.Clock() # Create a clock object
     game_state = chessEngine.GameState() # Create a GameState object calling the Gamestate __init_ method
     legal_moves = game_state.get_valid_moves() # Get the valid moves for the current game state
@@ -89,8 +115,10 @@ def main():
     should_animate = False # Flag variable to check when to animate a move
     move_log_font = p.font.SysFont("Arial", 12, False, False) # Font for the move log (arial 11 size, not bold, not italic)
     endgame_text_font = p.font.SysFont("Helvitca", 32, True, False) # Bold, not italic, 32 size, Helvetica
+    footer_font = p.font.SysFont("Arial", 14, False, False) # New font for the footer
+    footer_text = "" # New variable to hold the footer message
 
-    p.display.set_caption("Chess") # Set the window title
+    set_game_caption() # Set the game caption based on the players
     load_images() # Load the images for the pieces before the while loop
     is_running = True # Variable to control the main loop
     selected_square = () # Tuple (row,col) to store the last click of square selected by the user
@@ -103,6 +131,10 @@ def main():
     if(stockfish_white_player or stockfish_black_player): 
         stockfish_engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
 
+    ai_input_queue = Queue()
+    ai_output_queue = Queue()
+    AI_process = Process(target=chessAI.run_ai_loop, args=(ai_input_queue, ai_output_queue))
+    AI_process.start()
 
     while is_running:
         clock.tick(MAX_FPS)
@@ -115,18 +147,25 @@ def main():
                 if stockfish_white_player or stockfish_black_player: # If Stockfish is being used
                     stockfish_engine.quit() # Quit the Stockfish engine
             elif event.type == p.MOUSEBUTTONDOWN: # Check if the user clicked the mouse
-                if not is_game_over and not promotion_pending_move: # If the game is not over, no promotion pending, process the mouse click
+                if not is_game_over and not promotion_pending_move and human_turn and not AI_thinking: # If the game is not over, no promotion pending, process the mouse click
                     click_position = p.mouse.get_pos() # Get the mouse (x,y) position
                     clicked_col = click_position[0] // SQ_SIZE # Calculate the column based on mouse position
                     clicked_row = click_position[1] // SQ_SIZE # Calculate the row based on mouse position
-                    
+                    # only allow starting a move from the current side to move
+                    if selected_square == ():
+                        piece = game_state.board[clicked_row][clicked_col]
+                        if piece != "--":
+                            if (game_state.white_to_move and piece[0] != 'w') or ((not game_state.white_to_move) and piece[0] != 'b'):
+                                # ignore first click on opponent piece
+                                continue
+
                     if selected_square == (clicked_row, clicked_col) or clicked_col >= 8: # If the same square is clicked twice or clicked outside the board (i.e move log section)
                         selected_square, click_history = (), [] # deselect the selected square
                     else:
                         selected_square = (clicked_row, clicked_col) # Update the selected square
                         click_history.append(selected_square) # Add the selected square to player clicks
                     
-                    if len(click_history) == 2 and human_turn: # Process move if two squares are selected and it's human's turn (after 2nd click)
+                    if len(click_history) == 2: # Process move if two squares are selected in the human's turn (after 2nd click)
                         move = chessEngine.Move(click_history[0], click_history[1], game_state.board)
                         print(move.get_chess_notation()) # Print the move in chess notation (for debugging purposes)
                         move_found = False
@@ -137,13 +176,25 @@ def main():
                                     promotion_pending_move = move_to_make
                                     print("PAWN PROMOTION: Press 'Q', 'R', 'B', or 'N'.")
                                 else:
-                                    game_state.make_move(move_to_make) # Make the move in the game state
-                                    move_executed, should_animate = True, True
-                                    selected_square, click_history = (), [] # Reset the player clicks after making the move
+                                    # board/move consistency guard
+                                    board_piece = game_state.board[move_to_make.start_row][move_to_make.start_col]
+                                    if board_piece != move_to_make.moved_piece:
+                                        print("Refusing to execute inconsistent move.",
+                                            "board has:", board_piece, "| move.moved_piece:", move_to_make.moved_piece,
+                                            "| from:", (move_to_make.start_row, move_to_make.start_col),
+                                            "to:", (move_to_make.end_row, move_to_make.end_col))
+                                        # Reset selection so user can re-try cleanly
+                                        selected_square, click_history = (), []
+                                        move_executed, should_animate = False, False
+                                    else:
+                                        game_state.make_move(move_to_make)
+                                        move_executed, should_animate = True, True
+                                        selected_square, click_history = (), []
+
                                 move_found = True
                                 break
                         if not move_found: # If the move is not valid
-                            click_history = [selected_square]   # Reset the player clicks to only the last selected square
+                            click_history = [selected_square]  # Reset the player clicks to only the last selected square
 
             elif event.type == p.KEYDOWN: # Check if a key is pressed
                 if promotion_pending_move:
@@ -163,8 +214,12 @@ def main():
                         move_executed, should_animate, is_game_over = True, False, False
                         legal_moves = game_state.get_valid_moves()
                         selected_square, click_history = (), [] # Undo any square selections
-                        if AI_thinking:
-                            AI_process.terminate() # Terminate the AI move finding process if it is running
+                        if AI_thinking: # Flush any pending AI outputs so a late result can't apply to the new position
+                            while not ai_output_queue.empty():
+                                try:
+                                    ai_output_queue.get_nowait()
+                                except:
+                                    break
                             AI_thinking = False # Reset the AI thinking flag if AI was thinking
                         move_undone = True # Set the move undone flag to True
                     if event.key == p.K_r: # if 'r' key is pressed
@@ -173,41 +228,51 @@ def main():
                         selected_square, click_history = (), [] # Undo any square selections
                         move_executed, should_animate, is_game_over = False, False, False
                         move_undone = False # Reset the move undone flag
+                        if AI_thinking: # If AI was thinking, flush any pending outputs so a late result can't apply to the new game
+                            while not ai_output_queue.empty():
+                                try:
+                                    ai_output_queue.get_nowait()
+                                except:
+                                    break
+                            AI_thinking = False # Reset the AI thinking flag if AI was thinking
         
-        # AI move logic:  custom AI (multiprocessing)
-        if not stockfish_turn and not is_game_over and not promotion_pending_move and not human_turn and not move_undone: # If the game is not over, no promotion pending, and it's our AI's turn
+        # AI move logic: our custom AI (multiprocessing)
+        if not is_game_over and not promotion_pending_move and not human_turn and not stockfish_turn and not move_undone: # If the game is not over, no promotion pending, and it's our AI's turn
             if not AI_thinking:
                 AI_thinking = True
                 print("AI is thinking...") # Print AI is thinking message
-                return_queue = Queue() # queue to track the best move from the AI within each thread and pass data between threads
-                AI_process = Process(target=chessAI.get_best_move, args=(game_state, legal_moves, return_queue))
-                AI_process.start() # Start the AI move finding process
-            if not AI_process.is_alive(): # If the AI move finding process is still running
+                footer_text = "AI is thinking..."
+                pos_key = len(game_state.moves_log)
+                ai_input_queue.put((pos_key, game_state, legal_moves))
+            if not ai_output_queue.empty():
                 print("AI finished thinking.") # Print AI finished thinking message
-                if not return_queue.empty(): # If the return queue is not empty
-                    AI_move = return_queue.get() # Get the best move from the AI
+                #if not return_queue.empty(): # If the return queue is not empty
+                pos_key_returned, AI_move = ai_output_queue.get() # Get the best move from the AI
+                #### TEMPORARILY disabling fallback for testing purposes ###
+                # if AI_move is None: # If best move is none
+                    #AI_move = chessAI.random_AI_move(legal_moves) # Get a random move from the Random AI function
+                if AI_move is not None and pos_key_returned == len(game_state.moves_log):
+                    game_state.make_move(AI_move) # Make the AI move in the game state
+                    move_executed, should_animate = True, True # Set the flags to indicate a move has been made
                 else:
-                    AI_move = None # If the return queue is empty, set AI_move to None
-                if AI_move is None: # If best move is none
-                    #print("No valid moves found by AI.") # Print no valid moves found message
-                     AI_move = chessAI.random_AI_move(legal_moves) # Get a random move from the Random AI function
-                game_state.make_move(AI_move) # Make the AI move in the game state
-                move_executed, should_animate = True, True # Set the flags to indicate a move has been made
+                    # stale result or None move - ignore
+                    move_executed, should_animate = False, False
                 AI_thinking = False # Reset the AI thinking flag
         
-        # AI move logic:  Stockfish
+        # AI move logic: Stockfish
         elif stockfish_turn and not is_game_over and not promotion_pending_move and not human_turn:
             print("Stockfish is thinking...")
-            fen   =  game_state.to_fen() # Convert the game state to FEN format for Stockfish
+            footer_text = "Stockfish is thinking..."
+            fen = game_state.to_fen() # Convert the game state to FEN format for Stockfish
             board = chess.Board(fen)
             result = stockfish_engine.play(board, chess.engine.Limit(depth=STOCKFISH_ENGINE_DEPTH))
             print("Stockfish finished thinking.")
             sfm = result.move
-            sr = 7 - (sfm.from_square // 8)
-            sc =      sfm.from_square % 8
-            er = 7 - (sfm.to_square   // 8)
-            ec =      sfm.to_square   % 8
-            sf_move = chessEngine.Move((sr, sc), (er, ec), game_state.board)
+            start_row = 7 - (sfm.from_square // 8)
+            start_col = sfm.from_square % 8
+            end_row = 7 - (sfm.to_square // 8)
+            end_col = sfm.to_square   % 8
+            sf_move = chessEngine.Move((start_row, start_col), (end_row, end_col), game_state.board)
             game_state.make_move(sf_move)
             move_executed, should_animate = True, True
         
@@ -226,8 +291,9 @@ def main():
             
             move_executed, should_animate = False, False # Reset the flags
             move_undone = False # Reset the move undone flag
+            footer_text = ""
 
-        draw_game_state(screen, game_state, legal_moves, selected_square, promotion_pending_move, move_log_font)
+        draw_game_state(screen, game_state, legal_moves, selected_square, promotion_pending_move, move_log_font, footer_font, footer_text)
         
         if game_state.is_checkmate or game_state.is_stalemate : # If checkmated, gameover and print checkmate message
             is_game_over = True
@@ -238,14 +304,19 @@ def main():
             draw_endgame_text(screen, print_text, endgame_text_font) # Draw the endgame text on the screen
         p.display.flip() # Update the display
 
+    AI_process.terminate()
+    if stockfish_white_player or stockfish_black_player:
+        stockfish_engine.quit()
+
 """
 Graphics in the current game state
 """
-def draw_game_state(screen, game_state, legal_moves, selected_square, promotion_pending_move, move_log_font):
+def draw_game_state(screen, game_state, legal_moves, selected_square, promotion_pending_move, move_log_font, footer_font, footer_text):
     draw_board(screen) # Draw the squares on board
     highlight_squares(screen, game_state, legal_moves, selected_square, promotion_pending_move) # Highlight current chess piece and its valid moves
     draw_pieces(screen, game_state.board) # Draw the pieces on the squares on board
     draw_move_log(screen, game_state, move_log_font) # Draw the move log text on the screen
+    draw_footer(screen, footer_font, footer_text)
 
 """
 Draws the squares on the chess board.
@@ -334,6 +405,20 @@ def draw_move_log(screen, game_state, font):
         text_rect = move_log_section_rect.move(move_text_x_padding, move_text_y_padding) # Create a location for the text surface
         screen.blit(text_surface, text_rect) # Display the text in the specified location
         move_text_y_padding += text_surface.get_height() + move_text_line_space  # Update the padding for the next move text
+
+"""
+Draws the footer text at the bottom of the window.
+"""
+def draw_footer(screen, font, text):
+    footer_rect = p.Rect(0, BOARD_HEIGHT, BOARD_WIDTH + MOVE_LOG_SECTION_WIDTH, FOOTER_HEIGHT)
+    p.draw.rect(screen, p.Color('grey'), footer_rect)
+    p.draw.rect(screen, p.Color('darkgrey'), footer_rect, 2)
+    
+    text_surface = font.render(text, True, p.Color('black'))
+    
+    # Center the text in the footer
+    text_rect = text_surface.get_rect(center=footer_rect.center)
+    screen.blit(text_surface, text_rect)
 
 """
 Animating chess piece movement
