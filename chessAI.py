@@ -5,7 +5,6 @@ with alpha-beta pruning and a neural network-based evaluation function.
 import numpy as np # for numeric array operation (encoding)
 import tensorflow as tf # for loading and running the neural network model
 import random # for random move selection in fallback logic
-import sys
 
 # Constants for evaluation
 CHECKMATE_SCORE = 1000 # score assigned to checkmate positions
@@ -24,13 +23,12 @@ eval_model = None # TensorFlow model for evaluation
 MODEL_INPUT = None # Preallocated input buffer for the model (1 × 768)
 prediction_graph = None # Compiled prediction graph for speed (if available)
 
-# maps piece codes to channel indices 0–11
-piece_to_index = {
-    "wp":0, "wN":1, "wB":2,
-    "wR":3, "wQ":4, "wK":5,
-    "bp":6, "bN":7, "bB":8,
-    "bR":9, "bQ":10,"bK":11
-}
+# A map to convert piece characters to a 0-5 integer index.
+PIECE_TYPE_MAP = {'p': 0, 'N': 1, 'B': 2, 'R': 3, 'Q': 4, 'K': 5}
+
+# transposition table
+TRANSPOSITION_TABLE = {} # global dictionary for storing board states and their evaluation scores
+EXACT, LOWER, UPPER = 0, 1, 2 # transposition flags to classify the stored score as exact, a lower bound, or an upper bound
 
 '''
 Vectorized DNN eval evaluation
@@ -62,16 +60,24 @@ This builds a fresh encoding from scratch.
 Used at root node of search or when encoding don't already exist for modification
 '''
 def encode_board_nn(board):
-    encoded_vector = np.zeros(768, dtype=np.float32) # initialize 12×64 array as flat vector
-    for row_index in range(8): # iterate over rows
-        for col_index in range(8): # iterate over columns
-            piece = board[row_index][col_index] # piece at (row,col)
-            if piece != "--": # If the position on the board is not empty
-                encoded_vector[piece_to_index[piece] * 64 + square_index(row_index, col_index)] = 1.0 # update encoding
-    return encoded_vector # return the encoding
+    encoded_vector = np.zeros(768, dtype=np.float32)
+    for row_index in range(8):
+        for col_index in range(8):
+            piece = board[row_index][col_index]
+            if piece != "--":
+                color_offset = 0 if piece[0] == 'w' else 384
+                piece_type_char = piece[1]
+                # Calculate the piece offset using the global map
+                piece_offset = PIECE_TYPE_MAP[piece_type_char] * 64
+                # The square offset is the same as before.
+                square_offset = square_index(row_index, col_index)
+                # Combine the offsets to get the final index
+                index = color_offset + piece_offset + square_offset
+                encoded_vector[index] = 1
+    return encoded_vector
 
 '''
-Lightweight move property helpers for NNUE encoding.
+Lightweight move property helpers for nn encoding.
 These avoid calling chessEngine methods directly for performance reasons.
 During deep search the AI simulates thousands of positions, so repeatedly
 asking the full engine to check captures, promotions etc. would be too slow.
@@ -146,20 +152,28 @@ def apply_encoding(encoding_vector, move, changes_to_undo):
     moved_piece_code = move._nn_pf
     destination_piece_code = move._nn_pt
     captured_piece_code = move._nn_pc
+    
+    # Helper function to calculate the nn index
+    def get_nn_index(piece_code, row, col):
+        color_offset = 0 if piece_code[0] == 'w' else 384
+        piece_type_char = piece_code[1]
+        piece_offset = PIECE_TYPE_MAP[piece_type_char] * 64
+        square_offset = square_index(row, col)
+        return color_offset + piece_offset + square_offset
 
     # Handle the moved piece at its origin (this piece is now gone from its original square)
-    start_index = piece_to_index[moved_piece_code] * 64 + square_index(start_row, start_col)
+    start_index = get_nn_index(moved_piece_code, start_row, start_col)
     undo_log(encoding_vector, start_index, 0.0, changes_to_undo)
 
     # Handle the captured piece (removed from the board)
     if captured_piece_code != "--" and captured_piece_code is not None:
         captured_row = move._nn_cap_r
         captured_col = move._nn_cap_c
-        captured_index = piece_to_index[captured_piece_code] * 64 + square_index(captured_row, captured_col)
+        captured_index = get_nn_index(captured_piece_code, captured_row, captured_col)
         undo_log(encoding_vector, captured_index, 0.0, changes_to_undo)
 
     # Handle the piece at the destination square after the move
-    end_index = piece_to_index[destination_piece_code] * 64 + square_index(end_row, end_col)
+    end_index = get_nn_index(destination_piece_code, end_row, end_col)
     undo_log(encoding_vector, end_index, 1.0, changes_to_undo)
 
     # Handle the rook's move during a castling
@@ -172,10 +186,10 @@ def apply_encoding(encoding_vector, move, changes_to_undo):
 
         rook_row = start_row
         # Clear the rook from its original position.
-        rook_start_index = piece_to_index[rook_code] * 64 + square_index(rook_row, rook_start_col)
+        rook_start_index = get_nn_index(rook_code, rook_row, rook_start_col)
         undo_log(encoding_vector, rook_start_index, 0.0, changes_to_undo)
         # Place the rook at its new position.
-        rook_end_index = piece_to_index[rook_code] * 64 + square_index(rook_row, rook_end_col)
+        rook_end_index = get_nn_index(rook_code, rook_row, rook_end_col)
         undo_log(encoding_vector, rook_end_index, 1.0, changes_to_undo)
 
 
@@ -256,81 +270,109 @@ Negamax algorithm to find the best move (recursive function) with alpha-beta pru
 '''
 def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha, beta,
                                      turn_multiplier, depth_from_root, encoding):
-    global best_moves_list, function_calls # Initialize the empty best moves list, next best move to None and function calls to 0
-    function_calls += 1 # Increment the function calls count
-    if not legal_moves: # if no more legal moves
-        return turn_multiplier * terminal_eval_score(game_state) # Evaluate the board score for the current game state and return it
+    global best_moves_list, function_calls  # Initialize the empty best moves list, next best move to None and function calls to 0
+    function_calls += 1  # Increment the function calls count
+    fen_key = game_state.to_fen()  # for transposition table, creates a unique key for the board state
+    alpha_orig = alpha  # transposition stores original alpha to classify the stored result
 
+    # Check if the current position is in the transposition table
+    entry = TRANSPOSITION_TABLE.get(fen_key)  # retrieves a stored entry in transposition table if it exists
+    if entry and entry.get('tt_depth', -1) >= search_depth_left:  # check if the entry in transposition table is valid for the current search depth
+        flag = entry.get('flag', EXACT) # gets the flags from the stored entry, defaults to EXACT if no flag is present.
+        score = entry['score'] # retrieve the stored evaluation score from the entry
+        if flag == EXACT: # checks if the stored score is an exact evaluation (i.e., not a bound)
+            return score  # returns the exact score immediately as no further search is needed for this position
+        elif flag == LOWER: # checks if the stored score is a lower bound (i.e., the best score was at least this value)
+            alpha = max(alpha, score) # update the alpha value with the higher of its current value or the stored lower bound. This prunes branches that can't be better than this score.
+        elif flag == UPPER: # checks if the stored score is an upper bound (i.e., the best score was at most this value)
+            beta = min(beta, score) # update the beta value with the lower of its current value or the stored upper bound. This prunes branches that can't be worse than this score.
+        if alpha >= beta: # checks for an alpha-beta cutoff after updating the bounds. If alpha is now greater than or equal to beta a cutoff is possible.
+            return score  # return the stored score, as the current branch can be safely pruned.
+    
+    if not legal_moves:  # if no more legal moves
+        score = turn_multiplier * terminal_eval_score(game_state)  # Evaluate the board score for the current game state and return it
+        TRANSPOSITION_TABLE[fen_key] = {'score': score, 'tt_depth': search_depth_left, 'flag': EXACT}  # store a leaf node's score as EXACT
+        return score
+    
     # When search_depth_left == 1 i.e., batched leaf evaluation (batching per node at depth-1, not all leaves of the whole tree)
-    if search_depth_left == 1: # if we are at the second last depth of our search
-        max_score = -CHECKMATE_SCORE # set the max score to the lowest possible value
-        i = 0 # i is batch start index
-        while i < len(legal_moves): # more moves remain in next batch (incase >100 legal moves exist and pruning did not occur)
-            moves_batch = legal_moves[i:i + MAX_LEAF_BATCH] # take a batch of moves to evaluate
-            encoded_boards_to_evaluate = [] # list to hold encoded boards for batch evaluation
-            batch_index_map = [] # list to map evaluation results back to the original move index
-            move_scores_raw = [None] * len(moves_batch) # list to store the raw scores of each move in the batch
-            for j, move in enumerate(moves_batch): # j is batch move index
-                new_enc = encoding.copy() # create a copy of the parent encoding to apply changes to
-                annotate_move_for_encoding(game_state, move) # minimal annotations for nn board
-                changes_to_undo = [] # initialize a list to store changes for quick undo
-                apply_encoding(new_enc, move, changes_to_undo) # apply the move to the encoding
-                game_state.make_move(move) # make the move on the actual game state
-                next_legal_moves = game_state.get_valid_moves() # get the legal moves from the new position
-                if (len(next_legal_moves) == 0) and (game_state.is_checkmate or game_state.is_stalemate): # If child is terminal (checkmate or stalemate) avoid NN call
-                    move_scores_raw[j] = terminal_eval_score(game_state) # directly evaluate the terminal state without a neural network call
+    if search_depth_left == 1:  # if we are at the second last depth of our search
+        max_score = -CHECKMATE_SCORE  # set the max score to the lowest possible value
+        i = 0  # i is batch start index
+        while i < len(legal_moves):  # more moves remain in next batch (incase >100 legal moves exist and pruning did not occur)
+            moves_batch = legal_moves[i:i + MAX_LEAF_BATCH]  # take a batch of moves to evaluate
+            encoded_boards_to_evaluate = []  # list to hold encoded boards for batch evaluation
+            batch_index_map = []  # list to map evaluation results back to the original move index
+            move_scores_raw = [None] * len(moves_batch)  # list to store the raw scores of each move in the batch
+            for j, move in enumerate(moves_batch):  # j is batch move index
+                new_enc = encoding.copy()  # create a copy of the parent encoding to apply changes to
+                annotate_move_for_encoding(game_state, move)  # minimal annotations for nn board
+                changes_to_undo = []  # initialize a list to store changes for quick undo
+                apply_encoding(new_enc, move, changes_to_undo)  # apply the move to the encoding
+                game_state.make_move(move)  # make the move on the actual game state
+                next_legal_moves = game_state.get_valid_moves()  # get the legal moves from the new position
+                if (len(next_legal_moves) == 0) and (game_state.is_checkmate or game_state.is_stalemate):  # If child is terminal (checkmate or stalemate) avoid NN call
+                    move_scores_raw[j] = terminal_eval_score(game_state)  # directly evaluate the terminal state without a neural network call
                 else:
-                    encoded_boards_to_evaluate.append(new_enc) # add the new encoding to the batch for evaluation
-                    batch_index_map.append(j) # record the index to map the score back
-                game_state.undo_move() # undo the move on the actual game state
+                    encoded_boards_to_evaluate.append(new_enc)  # add the new encoding to the batch for evaluation
+                    batch_index_map.append(j)  # record the index to map the score back
+                game_state.undo_move()  # undo the move on the actual game state
                 undo_encoding(new_enc, changes_to_undo)
-            if encoded_boards_to_evaluate: # if there are boards to evaluate
-                preds = eval_batch(encoded_boards_to_evaluate) # evaluate the batch of boards at once
-                for eval_index, j in enumerate(batch_index_map): # loop through the evaluation results
-                    move_scores_raw[j] = WEIGHTS["dnn"] * float(preds[eval_index]) # store the final weighted score
+            if encoded_boards_to_evaluate:  # if there are boards to evaluate
+                preds = eval_batch(encoded_boards_to_evaluate)  # evaluate the batch of boards at once
+                for eval_index, j in enumerate(batch_index_map):  # loop through the evaluation results
+                    move_scores_raw[j] = WEIGHTS["dnn"] * float(preds[eval_index])  # store the final weighted score
             for j, move in enumerate(moves_batch):
-                score = turn_multiplier * move_scores_raw[j] # calculate the score for the current player's perspective
+                score = turn_multiplier * move_scores_raw[j]  # calculate the score for the current player's perspective
                 # negamax check
-                if score > max_score: # If the score is greater than the current max score
-                    max_score = score # Update the maximum score
-                    if search_depth_left == MAX_DEPTH: # If the search depth is at the maximum depth
-                        best_moves_list = [move] # Initialize the list of best moves
-                elif score == max_score and search_depth_left == MAX_DEPTH: # If the score is equal to the current max score (tie)
-                    best_moves_list.append(move) # Add the move to the list of best moves
-                # tracking alpha/beta for parent level pruning (between second last nodes)
+                if score > max_score:  # If the score is greater than the current max score
+                    max_score = score  # Update the maximum score
+                    if search_depth_left == MAX_DEPTH:  # If the search depth is at the maximum depth
+                        best_moves_list = [move]  # Initialize the list of best moves
+                elif score == max_score and search_depth_left == MAX_DEPTH:  # If the score is equal to the current max score (tie)
+                    best_moves_list.append(move)  # Add the move to the list of best moves
+                # pruning
                 if max_score > alpha:
-                    alpha = max_score # Update alpha to the maximum score found
-                if alpha >= beta: # If alpha is greater than or equal to beta
-                    return max_score # exit the loop
-            i += MAX_LEAF_BATCH # move to the next batch of moves
-        return max_score # return the best score found in this branch
-    # When search_depth_left >= 2
-    max_score = -CHECKMATE_SCORE # Initialize to a very low score for the player's best move (max score obtainable)
-    for move in legal_moves: # loop through each legal move the player can make
-        new_enc = encoding.copy() # copy encoding (fast for 768 floats)
-        annotate_move_for_encoding(game_state, move)
-        changes_to_undo = [] # initialize the changes stack
-        apply_encoding(new_enc, move, changes_to_undo) # apply encoding changes before mutating the game state
+                    alpha = max_score  # Update alpha to the maximum score found
+                if alpha >= beta:  # If alpha is greater than or equal to beta
+                    break  # exit the loop
+            i += MAX_LEAF_BATCH  # move to the next batch of moves
 
-        game_state.make_move(move) # Make the player's move in the game state
-        next_possible_moves = game_state.get_valid_moves() # Get the valid moves for the next possible moves
-        score = -negamax_alpha_beta_search(game_state, next_possible_moves, search_depth_left - 1, -beta, -alpha, -turn_multiplier, depth_from_root + 1, new_enc) # Recursive call to find the best move for the opponent
-        game_state.undo_move() # Undo the player's move to evaluate the next one
-        undo_encoding(new_enc, changes_to_undo) # restore encoding quickly
-        # negamax check
-        if score > max_score: # If the score is greater than the current max score
-            max_score = score # Update the maximum score
-            if search_depth_left == MAX_DEPTH: # If the search depth is at the maximum depth
-                best_moves_list = [move] # Initialize the list of best moves
-        elif score == max_score: # If the score is equal to the current max score (tie)
-            if search_depth_left == MAX_DEPTH: # If the search depth is at the maximum depth
-                best_moves_list.append(move) # Add the move to the list of best moves
-        # pruning happens here
-        if max_score > alpha:
-            alpha = max_score # Update alpha to the maximum score found
-        if alpha >= beta: # If alpha is greater than or equal to beta
-            break # exit the loop (pruning)
-    return max_score # Return the maximum score found
+    else:  # When search_depth_left >= 2
+        max_score = -CHECKMATE_SCORE  # Initialize to a very low score for the player's best move (max score obtainable)
+        for move in legal_moves:  # loop through each legal move the player can make
+            new_enc = encoding.copy()  # copy encoding (fast for 768 floats)
+            annotate_move_for_encoding(game_state, move)
+            changes_to_undo = []  # initialize the changes stack
+            apply_encoding(new_enc, move, changes_to_undo)  # apply encoding changes before mutating the game state
+
+            game_state.make_move(move)  # Make the player's move in the game state
+            next_possible_moves = game_state.get_valid_moves()  # Get the valid moves for the next possible moves
+            score = -negamax_alpha_beta_search(game_state, next_possible_moves, search_depth_left - 1, -beta, -alpha, -turn_multiplier, depth_from_root + 1, new_enc)  # Recursive call to find the best move for the opponent
+            game_state.undo_move()  # Undo the player's move to evaluate the next one
+            undo_encoding(new_enc, changes_to_undo)  # restore encoding quickly
+            # negamax check
+            if score > max_score:  # If the score is greater than the current max score
+                max_score = score  # Update the maximum score
+                if search_depth_left == MAX_DEPTH:  # If the search depth is at the maximum depth
+                    best_moves_list = [move]  # Initialize the list of best moves
+            elif score == max_score:  # If the score is equal to the current max score (tie)
+                if search_depth_left == MAX_DEPTH:  # If the search depth is at the maximum depth
+                    best_moves_list.append(move)  # Add the move to the list of best moves
+            # pruning happens here
+            if max_score > alpha:
+                alpha = max_score  # Update alpha to the maximum score found
+            if alpha >= beta:  # If alpha is greater than or equal to beta
+                break  # exit the loop (pruning)
+
+    # classify transposition table flag based on window and then store
+    if max_score <= alpha_orig:  # If the best score found is less than or equal to the original alpha, it means the search failed to raise alpha.
+        flag = UPPER  # fail-low result, so the score is an upper bound on the true value (no move was found that could improve on the alpha score).
+    elif max_score >= beta:  # If the best score found is greater than or equal to beta, it means the search failed to fall below beta.
+        flag = LOWER  # fail-high result, so the score is a lower bound on the true value (a move is so good that the parent would have pruned this branch anyway).
+    else:  # If the best score found is within the original alpha-beta window.
+        flag = EXACT  # The score is considered an exact score because it's the true value for this position.
+    TRANSPOSITION_TABLE[fen_key] = {'score': max_score, 'tt_depth': search_depth_left, 'flag': flag}  # store the final score with its flag
+    return max_score  # Return the maximum score found
 
 '''
 Backup random AI move if AI negamax algorithm fails or returns None.
