@@ -11,7 +11,7 @@ CHECKMATE_SCORE = 1000 # score assigned to checkmate positions
 STALEMATE_SCORE = 0 # score assigned to stalemate positions
 MAX_DEPTH = 4 # search depth for negamax
 MODEL_PATH = "lichess_eval_model.keras" # filepath to trained keras model
-MAX_LEAF_BATCH = 100 # batched leaf evaluation batch size (legal moves per node mostly < 100, 218 theoretical max)
+MAX_LEAF_BATCH = 16 # batched leaf evaluation batch size (legal moves per node mostly < 100)
 
 # Weights for evaluation components, extra features can be added later (example: mobility, king safety, etc.)
 WEIGHTS = {
@@ -97,16 +97,6 @@ def promotion_piece_code(piece_from, promotion_choice):
     return f"{piece_color}{piece_letter}" # return the piece code with color and type (e.g., 'wQ' or 'bQ')
 
 '''
-Record prior value so we can undo later.
-'''
-def undo_log(encoding_vector, index, new_value, changes_to_undo):
-    previous_value = encoding_vector[index] # store the previous value at the index
-    if previous_value == new_value: # if the value is already set to the new value, do nothing
-        return
-    changes_to_undo.append((index, previous_value)) # record the change for undo
-    encoding_vector[index] = new_value
-
-'''
 Annotate each move for coding
 This function is a lightweight helper to prepare a Move object for encoding updates.
 It populates necessary attributes by using information already available on the Move object from the engine.
@@ -143,7 +133,7 @@ Update an existing encoding to reflect a single move without recomputing from sc
 At all deeper nodes, we already encode parent position.
 This is called before game_state.make_move(move).
 '''
-def apply_encoding(encoding_vector, move, changes_to_undo):
+def apply_encoding(encoding_vector, move):
     # derive basic squares from the move object
     start_row, start_col = move.start_row, move.start_col
     end_row, end_col = move.end_row, move.end_col
@@ -163,18 +153,18 @@ def apply_encoding(encoding_vector, move, changes_to_undo):
 
     # Handle the moved piece at its origin (this piece is now gone from its original square)
     start_index = get_nn_index(moved_piece_code, start_row, start_col)
-    undo_log(encoding_vector, start_index, 0.0, changes_to_undo)
+    encoding_vector[start_index] = 0.0
 
     # Handle the captured piece (removed from the board)
     if captured_piece_code != "--" and captured_piece_code is not None:
         captured_row = move._nn_cap_r
         captured_col = move._nn_cap_c
         captured_index = get_nn_index(captured_piece_code, captured_row, captured_col)
-        undo_log(encoding_vector, captured_index, 0.0, changes_to_undo)
+        encoding_vector[captured_index] = 0.0
 
     # Handle the piece at the destination square after the move
     end_index = get_nn_index(destination_piece_code, end_row, end_col)
-    undo_log(encoding_vector, end_index, 1.0, changes_to_undo)
+    encoding_vector[end_index] = 1.0
 
     # Handle the rook's move during a castling
     if move._nn_is_castling:
@@ -187,20 +177,10 @@ def apply_encoding(encoding_vector, move, changes_to_undo):
         rook_row = start_row
         # Clear the rook from its original position.
         rook_start_index = get_nn_index(rook_code, rook_row, rook_start_col)
-        undo_log(encoding_vector, rook_start_index, 0.0, changes_to_undo)
+        encoding_vector[rook_start_index] = 0.0
         # Place the rook at its new position.
         rook_end_index = get_nn_index(rook_code, rook_row, rook_end_col)
-        undo_log(encoding_vector, rook_end_index, 1.0, changes_to_undo)
-
-
-'''
-Undo the last apply_encoding by restoring the board to its
-previous state after making a temporary move during the AI's search (uses record from undo_log).
-'''
-def undo_encoding(encoding_vector, changes_to_undo):
-    while changes_to_undo: # Loop as long as there are changes to undo
-        index, previous_value = changes_to_undo.pop() # Remove the last change which is a tuple of (index, previous_value)
-        encoding_vector[index] = previous_value # Restore the previous value to the specified index in the encoding vector
+        encoding_vector[rook_end_index] = 1.0
 
 '''
 Evaluation score of the board based on terminal node cases
@@ -299,24 +279,24 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
         max_score = -CHECKMATE_SCORE  # set the max score to the lowest possible value
         i = 0  # i is batch start index
         while i < len(legal_moves):  # more moves remain in next batch (incase >100 legal moves exist and pruning did not occur)
+            cutoff = False  # reset per batch 
             moves_batch = legal_moves[i:i + MAX_LEAF_BATCH]  # take a batch of moves to evaluate
             encoded_boards_to_evaluate = []  # list to hold encoded boards for batch evaluation
             batch_index_map = []  # list to map evaluation results back to the original move index
             move_scores_raw = [None] * len(moves_batch)  # list to store the raw scores of each move in the batch
             for j, move in enumerate(moves_batch):  # j is batch move index
-                new_enc = encoding.copy()  # create a copy of the parent encoding to apply changes to
                 annotate_move_for_encoding(game_state, move)  # minimal annotations for nn board
-                changes_to_undo = []  # initialize a list to store changes for quick undo
-                apply_encoding(new_enc, move, changes_to_undo)  # apply the move to the encoding
                 game_state.make_move(move)  # make the move on the actual game state
                 next_legal_moves = game_state.get_valid_moves()  # get the legal moves from the new position
                 if (len(next_legal_moves) == 0) and (game_state.is_checkmate or game_state.is_stalemate):  # If child is terminal (checkmate or stalemate) avoid NN call
                     move_scores_raw[j] = terminal_eval_score(game_state)  # directly evaluate the terminal state without a neural network call
                 else:
+                    # non-terminal: build the child encoding snapshot
+                    new_enc = encoding.copy()  # create a copy of the parent encoding to apply changes to
+                    apply_encoding(new_enc, move)  # apply the move to the encoding
                     encoded_boards_to_evaluate.append(new_enc)  # add the new encoding to the batch for evaluation
                     batch_index_map.append(j)  # record the index to map the score back
                 game_state.undo_move()  # undo the move on the actual game state
-                undo_encoding(new_enc, changes_to_undo)
             if encoded_boards_to_evaluate:  # if there are boards to evaluate
                 preds = eval_batch(encoded_boards_to_evaluate)  # evaluate the batch of boards at once
                 for eval_index, j in enumerate(batch_index_map):  # loop through the evaluation results
@@ -334,22 +314,23 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
                 if max_score > alpha:
                     alpha = max_score  # Update alpha to the maximum score found
                 if alpha >= beta:  # If alpha is greater than or equal to beta
-                    break  # exit the loop
+                    cutoff = True
+                    break  # exit inner loop
             i += MAX_LEAF_BATCH  # move to the next batch of moves
+            if cutoff:
+                break # exit outer loop
 
     else:  # When search_depth_left >= 2
         max_score = -CHECKMATE_SCORE  # Initialize to a very low score for the player's best move (max score obtainable)
         for move in legal_moves:  # loop through each legal move the player can make
             new_enc = encoding.copy()  # copy encoding (fast for 768 floats)
             annotate_move_for_encoding(game_state, move)
-            changes_to_undo = []  # initialize the changes stack
-            apply_encoding(new_enc, move, changes_to_undo)  # apply encoding changes before mutating the game state
+            apply_encoding(new_enc, move)  # apply encoding changes before mutating the game state
 
             game_state.make_move(move)  # Make the player's move in the game state
             next_possible_moves = game_state.get_valid_moves()  # Get the valid moves for the next possible moves
             score = -negamax_alpha_beta_search(game_state, next_possible_moves, search_depth_left - 1, -beta, -alpha, -turn_multiplier, depth_from_root + 1, new_enc)  # Recursive call to find the best move for the opponent
             game_state.undo_move()  # Undo the player's move to evaluate the next one
-            undo_encoding(new_enc, changes_to_undo)  # restore encoding quickly
             # negamax check
             if score > max_score:  # If the score is greater than the current max score
                 max_score = score  # Update the maximum score
