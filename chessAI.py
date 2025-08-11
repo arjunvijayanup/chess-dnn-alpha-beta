@@ -5,6 +5,7 @@ with alpha-beta pruning and a neural network-based evaluation function.
 import numpy as np # for numeric array operation (encoding)
 import tensorflow as tf # for loading and running the neural network model
 import random # for random move selection in fallback logic
+from collections import defaultdict # for using killer moves' history tables
 
 # Constants for evaluation
 CHECKMATE_SCORE = 1000 # score assigned to checkmate positions
@@ -29,6 +30,11 @@ PIECE_TYPE_MAP = {'p': 0, 'N': 1, 'B': 2, 'R': 3, 'Q': 4, 'K': 5}
 # transposition table
 TRANSPOSITION_TABLE = {} # global dictionary for storing board states and their evaluation scores
 EXACT, LOWER, UPPER = 0, 1, 2 # transposition flags to classify the stored score as exact, a lower bound, or an upper bound
+
+# Killer moves for each ply (search depth)
+# History of good moves (large table for long-term storage)
+KILLER_MOVES = defaultdict(lambda: [None, None]) # two killers per ply (auto-creates [None, None] for unseen ply), stores non-capture moves that caused a beta cutoff at a given depth
+HISTORY_MOVES = defaultdict(int) # MOVES: stores a score for each move, incremented when the move causes a cutoff
 
 '''
 Vectorized DNN eval evaluation
@@ -229,15 +235,42 @@ def run_ai_loop(input_queue, output_queue):
         output_queue.put((pos_key, best_move)) # Send the result back to the main process along with the position key
 
 '''
+Function to prioritize legal moves for the search at a specific depth.
+Basic move ordering using captures, killer moves and history heuristic.
+This helps to find cut-off earlier for pruning, increasing efficiency.
+'''
+def order_moves(legal_moves, depth_from_root): 
+    if not legal_moves: # check if there are any moves to order
+        return legal_moves # return the empty list if no moves are available
+    move_scores = {} # dictionary to store the calculated score for each move
+    killer_moveIDs_at_depth = KILLER_MOVES[depth_from_root] # retrieve the two killer move IDs for the current search depth
+    for move in legal_moves: # iterate over each legal move to calculate its score
+        score = 0 # initialize the score for the current move
+        # Capture priority: Give a high score to captures
+        is_capture = move.is_captured # check if the move is a capture
+        if is_capture: # if the move is a capture
+            score += 100 # add a high score to prioritize captures
+        # Killer move priority: give a bonus to non-capture killer moves
+        if not is_capture and (move.unique_id == killer_moveIDs_at_depth[0] or move.unique_id == killer_moveIDs_at_depth[1]):
+            score += 50 # add a medium bonus score to non-capture killer moves
+        # History heuristic: add a score based on a move's past performance (accumulated for moves that led to a beta-cutoff)
+        score += HISTORY_MOVES.get(move.unique_id, 0) # add the history score, defaulting to 0 if not found, he history table is indexed by a unique identifier for each move
+        move_scores[move.unique_id] = score # Store the final calculated score for the move
+    # Sort the legal moves in descending order based on their calculated score
+    prioritized_moves = sorted(legal_moves, key=lambda m: move_scores.get(m.unique_id, 0), reverse=True)
+    return prioritized_moves # Return the list of moves now sorted by priority
+
+'''
 Helper function to make first recursive call to best move function
 '''
 def get_best_move(game_state, legal_moves):
-    global best_moves_list, function_calls # Initialize the empty list of best moves, next best move to None and function calls to 0
+    global best_moves_list, function_calls, KILLER_MOVES, HISTORY_MOVES # Initialize the empty list of best moves and killer moves' history, next best move to None and function calls to 0
     best_moves_list = [] # Initialize the list of best moves
     function_calls = 0 # Initialize the function calls to 0
+    KILLER_MOVES = defaultdict(lambda: [None, None]) # resets the killer moves table for a new search
+    HISTORY_MOVES = defaultdict(int) # resets the history moves table for a new search
     root_enc = encode_board_nn(game_state.board) # encode once at root
     turn_multiplier = 1 if game_state.white_to_move else -1 # Determine if it's white's turn
-    random.shuffle(legal_moves) # Shuffle the legal moves to add randomness
     negamax_alpha_beta_search(game_state, legal_moves, MAX_DEPTH, -CHECKMATE_SCORE, CHECKMATE_SCORE, turn_multiplier, 0, encoding=root_enc)
     # print(f"Number of function calls made: {function_calls}") # check performance of the algorithm
     if best_moves_list: # If there are best moves found
@@ -273,7 +306,8 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
         score = turn_multiplier * terminal_eval_score(game_state)  # Evaluate the board score for the current game state and return it
         TRANSPOSITION_TABLE[fen_key] = {'score': score, 'tt_depth': search_depth_left, 'flag': EXACT}  # store a leaf node's score as EXACT
         return score
-    
+
+    legal_moves = order_moves(legal_moves, depth_from_root) # order legal moves at the current depth for better pruning using captures, killer moves and history scores
     # When search_depth_left == 1 i.e., batched leaf evaluation (batching per node at depth-1, not all leaves of the whole tree)
     if search_depth_left == 1:  # if we are at the second last depth of our search
         max_score = -CHECKMATE_SCORE  # set the max score to the lowest possible value
@@ -314,6 +348,12 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
                 if max_score > alpha:
                     alpha = max_score  # Update alpha to the maximum score found
                 if alpha >= beta:  # If alpha is greater than or equal to beta
+                    if not move.is_captured: # killer history updates on cutoff (non-captures only)
+                        killers = KILLER_MOVES[depth_from_root] # retrieve killer moves for the current depth
+                        if killers[0] != move.unique_id:
+                            killers[1] = killers[0]
+                            killers[0] = move.unique_id # update the killer move ID list
+                        HISTORY_MOVES[move.unique_id] += search_depth_left * search_depth_left # update the history score
                     cutoff = True
                     break  # exit inner loop
             i += MAX_LEAF_BATCH  # move to the next batch of moves
@@ -343,6 +383,12 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
             if max_score > alpha:
                 alpha = max_score  # Update alpha to the maximum score found
             if alpha >= beta:  # If alpha is greater than or equal to beta
+                if not move.is_captured: # killer history updates on cutoff (non-captures only)
+                    killers = KILLER_MOVES[depth_from_root] # retrieve killer moves for the current depth
+                    if killers[0] != move.unique_id:
+                        killers[1] = killers[0]
+                        killers[0] = move.unique_id # update the killer move ID list
+                    HISTORY_MOVES[move.unique_id] += search_depth_left * search_depth_left # update the history score
                 break  # exit the loop (pruning)
 
     # classify transposition table flag based on window and then store
