@@ -2,3 +2,4 @@
 __pycache__
 chessAIengine.code-workspace
 chess_env
+*.pkl.gz

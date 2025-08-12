@@ -9,6 +9,20 @@ from collections import defaultdict # for using killer moves' history tables
 import os  # for model file existence check
 import chessEncoding
 
+# Initialize the opening book for the AI
+from chessOpening import OpeningBook
+BOOK = OpeningBook(
+    hf_name="Lichess/chess-openings",
+    split="train",
+    max_book_plies=20,
+    temperature=0.75,
+    cache_file="opening_prefix.pkl.gz",  # optional cache for speed
+    force_rebuild=False,
+    limit=None,
+    random_seed=None,
+    verbose=False
+) # Create an instance of the OpeningBook class
+
 # Constants for evaluation
 CHECKMATE_SCORE = 1000 # score assigned to checkmate positions
 STALEMATE_SCORE = 0 # score assigned to stalemate positions
@@ -154,6 +168,21 @@ def is_ping_pong_bounce(game_state, move):
 Helper function to make first recursive call to best move function
 '''
 def get_best_move(game_state, legal_moves):
+    # Opening book early return
+    try: # Attempt to use the opening book
+        if BOOK.enabled: # Check if the opening book is enabled
+            pre, cand = BOOK.peek(game_state) # Get the current move prefix and candidate moves from the book
+            #if len(pre) <= 2: # Only print verbose information for early plies
+            #    print("[Book] prefix:", pre) # Print the current move prefix
+            #    print("[Book] raw candidates:", list(cand.items())[:10]) # Print the top 10 raw candidates from the book
+
+            bm = BOOK.pick(game_state, legal_moves) # Try to pick a move from the opening book that is also legal
+
+            if bm is not None: # If a book move is found
+                return bm # Return the chosen book move
+    except Exception as e: # Catch any exceptions that occur during book lookup
+        print("[Book] error:", repr(e)) # Print the error
+
     global best_moves_list, function_calls, KILLER_MOVES, HISTORY_MOVES # Initialize the empty list of best moves and killer moves' history, next best move to None and function calls to 0
     TRANSPOSITION_TABLE.clear()
     best_moves_list = [] # Initialize the list of best moves
@@ -214,7 +243,7 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
                 game_state.make_move(move)  # make the move on the actual game state
                 next_legal_moves = game_state.get_valid_moves()  # get the legal moves from the new position
                 if (len(next_legal_moves) == 0) and (game_state.is_checkmate or game_state.is_stalemate):  # If child is terminal (checkmate or stalemate) avoid NN call
-                    move_scores_raw[j] = score = turn_multiplier * move_scores_raw[j]*terminal_eval_score(game_state)  # directly evaluate the terminal state without a neural network call
+                    move_scores_raw[j] = terminal_eval_score(game_state)  # directly evaluate the terminal state without a neural network call
                 else:
                     # non-terminal: build the child encoding snapshot
                     new_enc = encoding.copy()  # create a copy of the parent encoding to apply changes to
