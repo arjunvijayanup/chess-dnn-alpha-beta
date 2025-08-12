@@ -13,22 +13,22 @@ import shutil
 
 # Constants for the game
 BOARD_WIDTH = BOARD_HEIGHT = 512
-MOVE_LOG_SECTION_WIDTH = 300
+MOVE_LOG_SECTION_WIDTH = 150
 MOVE_LOG_SECTION_HEIGHT = BOARD_HEIGHT
 DIMENSION = 8
 SQ_SIZE = BOARD_HEIGHT // DIMENSION
 MAX_FPS = 20
 IMAGES = {}
-STOCKFISH_ENGINE_DEPTH  = 3 # if used for comparison with Stockfish
+STOCKFISH_ENGINE_DEPTH  = 1 # if used for comparison with Stockfish
 FOOTER_HEIGHT = 20
 WINDOW_HEIGHT = BOARD_HEIGHT + FOOTER_HEIGHT
-
+SCROLL_SPEED = 20
 
 # Who's playing?: Human and/or AI (can be stockfish or custom AI) players
-human_white_player = True # Flag for white player (True if human, False if AI)
+human_white_player = False # Flag for white player (True if human, False if AI)
 human_black_player = False # Flag for black player (True if human, False if AI)
 stockfish_white_player = False # Flag for white player (True if stockfish, False if custom AI we built)
-stockfish_black_player = False # Flag for black player (True if stockfish, False if custom AI we built)
+stockfish_black_player = True # Flag for black player (True if stockfish, False if custom AI we built)
 # Validation on flags to ensure one player cannot be both human and stockfish
 assert not (human_white_player and stockfish_white_player), "White player cannot be both human and Stockfish"
 assert not (human_black_player and stockfish_black_player), "Black player cannot be both human and Stockfish"
@@ -115,8 +115,11 @@ def main():
     should_animate = False # Flag variable to check when to animate a move
     move_log_font = p.font.SysFont("Arial", 12, False, False) # Font for the move log (arial 11 size, not bold, not italic)
     endgame_text_font = p.font.SysFont("Helvitca", 32, True, False) # Bold, not italic, 32 size, Helvetica
-    footer_font = p.font.SysFont("Arial", 14, False, False) # New font for the footer
-    footer_text = "" # New variable to hold the footer message
+    footer_font = p.font.SysFont("Arial", 14, False, False) # font for the footer
+    footer_text = "" # variable to hold the footer message
+
+    # scroll-related variable
+    scroll_offset = 0 # Vertical scroll position for the move log
 
     set_game_caption() # Set the game caption based on the players
     load_images() # Load the images for the pieces before the while loop
@@ -128,6 +131,7 @@ def main():
     AI_thinking = False # Flag for AI thinking (True if AI is thinking, False if not)
     AI_process = None # Process for AI move finding
     move_undone = False # Flag for move undoing (True if move is undone, False if not)
+    stockfish_engine = None
     if(stockfish_white_player or stockfish_black_player): 
         stockfish_engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
 
@@ -144,8 +148,6 @@ def main():
         for event in p.event.get():
             if event.type == p.QUIT: # Check if the user wants to quit
                 is_running = False # Set running to False to exit the loop
-                if stockfish_white_player or stockfish_black_player: # If Stockfish is being used
-                    stockfish_engine.quit() # Quit the Stockfish engine
             elif event.type == p.MOUSEBUTTONDOWN: # Check if the user clicked the mouse
                 if not is_game_over and not promotion_pending_move and human_turn and not AI_thinking: # If the game is not over, no promotion pending, process the mouse click
                     click_position = p.mouse.get_pos() # Get the mouse (x,y) position
@@ -195,6 +197,15 @@ def main():
                                 break
                         if not move_found: # If the move is not valid
                             click_history = [selected_square]  # Reset the player clicks to only the last selected square
+                
+                # mouse wheel scroll logic
+                elif event.button == 4:  # Mouse wheel up
+                    scroll_offset = max(0, scroll_offset - SCROLL_SPEED)
+                elif event.button == 5:  # Mouse wheel down
+                    line_height = move_log_font.get_height() + 2
+                    total_text_height = (len(game_state.moves_log) // 2 + 1) * line_height
+                    max_scroll_offset = max(0, total_text_height - MOVE_LOG_SECTION_HEIGHT)
+                    scroll_offset = min(max_scroll_offset, scroll_offset + SCROLL_SPEED)
 
             elif event.type == p.KEYDOWN: # Check if a key is pressed
                 if promotion_pending_move:
@@ -271,7 +282,7 @@ def main():
             start_row = 7 - (sfm.from_square // 8)
             start_col = sfm.from_square % 8
             end_row = 7 - (sfm.to_square // 8)
-            end_col = sfm.to_square   % 8
+            end_col = sfm.to_square  % 8
             sf_move = chessEngine.Move((start_row, start_col), (end_row, end_col), game_state.board)
             game_state.make_move(sf_move)
             move_executed, should_animate = True, True
@@ -292,8 +303,15 @@ def main():
             move_executed, should_animate = False, False # Reset the flags
             move_undone = False # Reset the move undone flag
             footer_text = ""
-
-        draw_game_state(screen, game_state, legal_moves, selected_square, promotion_pending_move, move_log_font, footer_font, footer_text)
+            
+            # Auto-scroll to the bottom of the move log
+            num_moves_to_display = len(game_state.moves_log) // 2
+            line_height = move_log_font.get_height() + 2
+            total_text_height = num_moves_to_display * line_height
+            max_scroll_offset = max(0, total_text_height - MOVE_LOG_SECTION_HEIGHT + 10)
+            scroll_offset = max_scroll_offset
+            
+        draw_game_state(screen, game_state, legal_moves, selected_square, promotion_pending_move, move_log_font, footer_font, footer_text, scroll_offset)
         
         if game_state.is_checkmate or game_state.is_stalemate : # If checkmated, gameover and print checkmate message
             is_game_over = True
@@ -304,18 +322,23 @@ def main():
             draw_endgame_text(screen, print_text, endgame_text_font) # Draw the endgame text on the screen
         p.display.flip() # Update the display
 
-    AI_process.terminate()
-    if stockfish_white_player or stockfish_black_player:
-        stockfish_engine.quit()
+    if AI_process and AI_process.is_alive():
+        AI_process.terminate()
+        AI_process.join()
+    if stockfish_engine is not None:
+        try:
+            stockfish_engine.quit()
+        except (chess.engine.EngineTerminatedError, chess.engine.EngineError, BrokenPipeError):
+            pass
 
 """
 Graphics in the current game state
 """
-def draw_game_state(screen, game_state, legal_moves, selected_square, promotion_pending_move, move_log_font, footer_font, footer_text):
+def draw_game_state(screen, game_state, legal_moves, selected_square, promotion_pending_move, move_log_font, footer_font, footer_text, scroll_offset):
     draw_board(screen) # Draw the squares on board
     highlight_squares(screen, game_state, legal_moves, selected_square, promotion_pending_move) # Highlight current chess piece and its valid moves
     draw_pieces(screen, game_state.board) # Draw the pieces on the squares on board
-    draw_move_log(screen, game_state, move_log_font) # Draw the move log text on the screen
+    draw_move_log(screen, game_state, move_log_font, scroll_offset) # Draw the move log text on the screen
     draw_footer(screen, footer_font, footer_text)
 
 """
@@ -372,39 +395,46 @@ def draw_pieces(screen, board):
                 screen.blit(IMAGES[piece], p.Rect(col * SQ_SIZE, row * SQ_SIZE, SQ_SIZE, SQ_SIZE))  # Draw the piece
 
 """
-Draws the move log text on the screen
+Draws the move log text on the screen with scrolling functionality and a visual scrollbar
 """
-def draw_move_log(screen, game_state, font):
-    move_log_section_rect = p.Rect(BOARD_WIDTH, 0, MOVE_LOG_SECTION_WIDTH, MOVE_LOG_SECTION_HEIGHT) # Create a rectangle for the move log section
-    p.draw.rect(screen, p.Color('grey'), move_log_section_rect)  # Draw the white section for the move log
-    p.draw.rect(screen, p.Color('darkgrey'), move_log_section_rect, 2)  # Draw the border for the move log section
-    move_log = game_state.moves_log  # Get the move log from the game state
-    move_texts = []  # List to store the text for each move
-    move_text_x_padding = move_text_y_padding = 5 # Initial Padding for the text in the move log section
-    move_text_line_space = 2  # Space between lines of text
-    moves_per_row = 3 # Number of moves per row in the move log section
+def draw_move_log(screen, game_state, font, scroll_offset):
+    move_log_section_rect = p.Rect(BOARD_WIDTH, 0, MOVE_LOG_SECTION_WIDTH, MOVE_LOG_SECTION_HEIGHT)
+    p.draw.rect(screen, p.Color('grey'), move_log_section_rect)
+    p.draw.rect(screen, p.Color('darkgrey'), move_log_section_rect, 2)
+    
+    move_log = game_state.moves_log
+    move_texts = []
+    moves_per_row = 1
+    for i in range(0, len(move_log), 2):
+        move_string = str(i // 2 + 1) + '. ' + str(move_log[i])
+        if i + 1 < len(move_log):
+            move_string += ' ' + str(move_log[i + 1])
+        move_texts.append(move_string)
+    
+    move_text_x_padding = 5
+    line_height = font.get_height() + 2
+    
+    current_y = 5
+    
+    for move_text in move_texts:
+        y_pos_relative_to_section = current_y - scroll_offset
+        if y_pos_relative_to_section >= 0 and y_pos_relative_to_section + line_height < MOVE_LOG_SECTION_HEIGHT:
+            text_surface = font.render(move_text, True, p.Color("black"))
+            screen.blit(text_surface, (BOARD_WIDTH + move_text_x_padding, y_pos_relative_to_section))
+        current_y += line_height
 
-    """
-    Loop through the move log in pairs (white and black moves)
-    Storing the moves in pairs for better readability
-    For every two moves, one for white and one for black
-    """
-    for i in range(0, len(move_log), 2):  # Loop through the move log in pairs
-        move_string = str(i // 2 + 1) + '. ' + str(move_log[i]) # Get the white move notation, with move number
-        if i + 1 < len(move_log):  # If there is a black move
-            move_string += ' ' + str(move_log[i + 1]) # Get the black move notation
-        move_texts.append(move_string)  # Add the move string to the move texts list
+    # Add scrollbar drawing logic
+    total_text_height = len(move_texts) * line_height
+    if total_text_height > MOVE_LOG_SECTION_HEIGHT:
+        # Draw the scrollbar track
+        scrollbar_track_rect = p.Rect(BOARD_WIDTH + MOVE_LOG_SECTION_WIDTH - 15, 0, 15, MOVE_LOG_SECTION_HEIGHT)
+        p.draw.rect(screen, p.Color('lightgrey'), scrollbar_track_rect)
 
-    # Loop through the move texts rows and display them on the screen
-    for i in range(0, len(move_texts), moves_per_row):
-        move_text = "" # Initialize the move text for the current row
-        for j in range(moves_per_row):  # Loop through the moves per row 
-            if i + j < len(move_texts):  # Check if the index is within bounds
-                move_text += move_texts[i+j] + "    "   # Concatenate the move text for the current row
-        text_surface = font.render(move_text, True, p.Color("black"))  # Render the text with black color
-        text_rect = move_log_section_rect.move(move_text_x_padding, move_text_y_padding) # Create a location for the text surface
-        screen.blit(text_surface, text_rect) # Display the text in the specified location
-        move_text_y_padding += text_surface.get_height() + move_text_line_space  # Update the padding for the next move text
+        # Calculate the thumb size and position
+        thumb_height = (MOVE_LOG_SECTION_HEIGHT / total_text_height) * MOVE_LOG_SECTION_HEIGHT
+        thumb_y = (scroll_offset / total_text_height) * MOVE_LOG_SECTION_HEIGHT
+        thumb_rect = p.Rect(BOARD_WIDTH + MOVE_LOG_SECTION_WIDTH - 15, thumb_y, 15, thumb_height)
+        p.draw.rect(screen, p.Color('darkgrey'), thumb_rect)
 
 """
 Draws the footer text at the bottom of the window.
@@ -441,7 +471,7 @@ def animate_move(move, screen, board, clock):
         # Draw the captured piece on top of the rectangle drawn
         if move.captured_piece != '--': 
             if move.is_en_passant:  # If the move is an en-passant move
-                en_passant_row = move.end_row - 1 if move.moved_piece[0] == 'w' else move.end_row + 1   # The row where the captured (en-passanted) pawn was
+                en_passant_row = move.end_row - 1 if move.moved_piece[0] == 'w' else move.end_row + 1  # The row where the captured (en-passanted) pawn was
                 end_square = p.Rect(move.end_col * SQ_SIZE, en_passant_row * SQ_SIZE, SQ_SIZE, SQ_SIZE)    # Draw the square where the captured (en-passanted) pawn was
         # Drawing moving piece
         screen.blit(IMAGES[move.moved_piece], p.Rect(col * SQ_SIZE, row * SQ_SIZE, SQ_SIZE, SQ_SIZE))
@@ -454,7 +484,7 @@ Draws text for game over messages
 def draw_endgame_text(screen, text, font):
     text_surface = font.render(text, 0, p.Color('Gray')) # Render in black color with no aliasing
     text_rect = p.Rect(0, 0, BOARD_WIDTH, BOARD_HEIGHT).move(BOARD_WIDTH/2 - text_surface.get_width()/2, 
-                                                                 BOARD_HEIGHT/2 - text_surface.get_height()/2) # Centering the text on the board
+                                                             BOARD_HEIGHT/2 - text_surface.get_height()/2) # Centering the text on the board
     screen.blit(text_surface, text_rect)
     text_surface = font.render(text, 0, p.Color("Black"))
     screen.blit(text_surface, text_rect.move(2, 2))

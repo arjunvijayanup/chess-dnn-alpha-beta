@@ -10,7 +10,7 @@ from collections import defaultdict # for using killer moves' history tables
 # Constants for evaluation
 CHECKMATE_SCORE = 1000 # score assigned to checkmate positions
 STALEMATE_SCORE = 0 # score assigned to stalemate positions
-MAX_DEPTH = 4 # search depth for negamax
+MAX_DEPTH = 2 # search depth for negamax
 MODEL_PATH = "lichess_eval_model.keras" # filepath to trained keras model
 MAX_LEAF_BATCH = 16 # batched leaf evaluation batch size (legal moves per node mostly < 100)
 
@@ -35,6 +35,7 @@ EXACT, LOWER, UPPER = 0, 1, 2 # transposition flags to classify the stored score
 # History of good moves (large table for long-term storage)
 KILLER_MOVES = defaultdict(lambda: [None, None]) # two killers per ply (auto-creates [None, None] for unseen ply), stores non-capture moves that caused a beta cutoff at a given depth
 HISTORY_MOVES = defaultdict(int) # MOVES: stores a score for each move, incremented when the move causes a cutoff
+PING_PONG_PENALTY = 0.05  # small penalty to discourage back and forth loops(NN interval: [-1,1])
 
 '''
 Vectorized DNN eval evaluation
@@ -101,6 +102,28 @@ def promotion_piece_code(piece_from, promotion_choice):
     if piece_letter not in ("Q","R","B","N"): # if choice is not a valid piece type
         piece_letter = "Q" # default to queen
     return f"{piece_color}{piece_letter}" # return the piece code with color and type (e.g., 'wQ' or 'bQ')
+
+'''
+Helper to detect immediate "ping-pong" (A->B then B->A) with no capture on either move.
+'''
+def is_ping_pong_bounce(game_state, move):
+    log = game_state.moves_log # retrieve the list of moves made so far in the game
+    if len(log) < 2: # check if there are at least two moves in the log
+        return False # if there are not at least two moves, it is not a ping pong
+    my_last_move = log[-2] # get the previous move made by the current player (move to compare against)
+    # same color and piece type, exact reverse squares, and not a capture/castle on either move
+    if (my_last_move.moved_piece[0] == move.moved_piece[0] and # check if the color of the two moves are the same
+        my_last_move.moved_piece[1] == move.moved_piece[1] and # check if the piece type of the two moves are the same (e.g., both knights)
+        my_last_move.start_row == move.end_row and # check if the starting row of the previous move is the same as the ending row of the current move
+        my_last_move.start_col == move.end_col and # check if the starting column of the previous move is the same as the ending column of the current move
+        my_last_move.end_row   == move.start_row and # check if the ending row of the previous move is the same as the starting row of the current move
+        my_last_move.end_col   == move.start_col and # check if the ending column of the previous move is the same as the starting column of the current move
+        not my_last_move.is_captured and # check if the previous move was not a capture
+        not move.is_captured and # check if the current move is not a capture
+        not my_last_move.is_castling_move and # check if the previous move was not a castling move
+        not move.is_castling_move): # check if the current move is not a castling move
+        return True # if all the conditions are met, it is a ping pong bounce
+    return False # if any of the conditions are not met, it is not a ping pong bounce
 
 '''
 Annotate each move for coding
@@ -337,13 +360,14 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
                     move_scores_raw[j] = WEIGHTS["dnn"] * float(preds[eval_index])  # store the final weighted score
             for j, move in enumerate(moves_batch):
                 score = turn_multiplier * move_scores_raw[j]  # calculate the score for the current player's perspective
+                # Apply ping-pong penalty if the move bounces the same piece back to its previous square
+                if is_ping_pong_bounce(game_state, move):
+                    score -= PING_PONG_PENALTY
                 # negamax check
                 if score > max_score:  # If the score is greater than the current max score
                     max_score = score  # Update the maximum score
-                    if search_depth_left == MAX_DEPTH:  # If the search depth is at the maximum depth
-                        best_moves_list = [move]  # Initialize the list of best moves
                 elif score == max_score and search_depth_left == MAX_DEPTH:  # If the score is equal to the current max score (tie)
-                    best_moves_list.append(move)  # Add the move to the list of best moves
+                    pass
                 # pruning
                 if max_score > alpha:
                     alpha = max_score  # Update alpha to the maximum score found
@@ -371,13 +395,16 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
             next_possible_moves = game_state.get_valid_moves()  # Get the valid moves for the next possible moves
             score = -negamax_alpha_beta_search(game_state, next_possible_moves, search_depth_left - 1, -beta, -alpha, -turn_multiplier, depth_from_root + 1, new_enc)  # Recursive call to find the best move for the opponent
             game_state.undo_move()  # Undo the player's move to evaluate the next one
+            # Apply ping-pong penalty at internal nodes too (score is already from current player's perspective)
+            if is_ping_pong_bounce(game_state, move):
+                score -= PING_PONG_PENALTY            
             # negamax check
             if score > max_score:  # If the score is greater than the current max score
                 max_score = score  # Update the maximum score
-                if search_depth_left == MAX_DEPTH:  # If the search depth is at the maximum depth
+                if depth_from_root == 0:  # If the search depth is at the maximum depth
                     best_moves_list = [move]  # Initialize the list of best moves
             elif score == max_score:  # If the score is equal to the current max score (tie)
-                if search_depth_left == MAX_DEPTH:  # If the search depth is at the maximum depth
+                if depth_from_root == 0:  # If the search depth is at the maximum depth
                     best_moves_list.append(move)  # Add the move to the list of best moves
             # pruning happens here
             if max_score > alpha:
