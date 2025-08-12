@@ -65,11 +65,11 @@ class GameState():
         active_color = 'w' if self.white_to_move else 'b' # 'w' for white's turn, 'b' for black
         
         castling_rights_string = "" # Castling rights string
-        current_castling_rights = self.castling_rights_current # Current castling rights
-        if current_castling_rights.white_kingside:   castling_rights_string += 'K' # If white can castle kingside
-        if current_castling_rights.white_queenside:  castling_rights_string += 'Q' # If white can castle queenside
-        if current_castling_rights.black_kingside:   castling_rights_string += 'k' # If black can castle kingside
-        if current_castling_rights.black_queenside:  castling_rights_string += 'q' # If black can castle queenside        
+        castling_rights_current = self.castling_rights_current # Current castling rights
+        if castling_rights_current.white_kingside:   castling_rights_string += 'K' # If white can castle kingside
+        if castling_rights_current.white_queenside:  castling_rights_string += 'Q' # If white can castle queenside
+        if castling_rights_current.black_kingside:   castling_rights_string += 'k' # If black can castle kingside
+        if castling_rights_current.black_queenside:  castling_rights_string += 'q' # If black can castle queenside        
         
         if not castling_rights_string:
             castling_rights_string = '-' # If no castling rights, set to '-'
@@ -77,9 +77,9 @@ class GameState():
         if self.en_passant_possible: # If en passant is possible
             en_passant_row, en_passant_file_index = self.en_passant_possible # Get the row and file of the en passant square
             en_passant_target_square = f"{chr(en_passant_file_index + ord('a'))}{8 - en_passant_row}" # Convert to algebraic notation (example:'e3')
-        halfmove_clock = 0
+        half_move_clock = 0
         fullmove_number = 1
-        return f"{fen_board_layout} {active_color} {castling_rights_string} {en_passant_target_square} {halfmove_clock} {fullmove_number}" # Return the complete FEN string
+        return f"{fen_board_layout} {active_color} {castling_rights_string} {en_passant_target_square} {half_move_clock} {fullmove_number}" # Return the complete FEN string
 
     '''
     Takes moves as a parameter and executes it.

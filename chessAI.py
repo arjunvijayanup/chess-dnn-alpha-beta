@@ -6,11 +6,13 @@ import numpy as np # for numeric array operation (encoding)
 import tensorflow as tf # for loading and running the neural network model
 import random # for random move selection in fallback logic
 from collections import defaultdict # for using killer moves' history tables
+import os  # for model file existence check
+import chessEncoding
 
 # Constants for evaluation
 CHECKMATE_SCORE = 1000 # score assigned to checkmate positions
 STALEMATE_SCORE = 0 # score assigned to stalemate positions
-MAX_DEPTH = 2 # search depth for negamax
+MAX_DEPTH = 4 # search depth for negamax
 MODEL_PATH = "lichess_eval_model.keras" # filepath to trained keras model
 MAX_LEAF_BATCH = 16 # batched leaf evaluation batch size (legal moves per node mostly < 100)
 
@@ -21,11 +23,8 @@ WEIGHTS = {
 
 # Global placeholders set during run_ai_loop
 eval_model = None # TensorFlow model for evaluation
-MODEL_INPUT = None # Preallocated input buffer for the model (1 × 768)
+MODEL_INPUT = None # Preallocated input buffer for the model (1 × 782)
 prediction_graph = None # Compiled prediction graph for speed (if available)
-
-# A map to convert piece characters to a 0-5 integer index.
-PIECE_TYPE_MAP = {'p': 0, 'N': 1, 'B': 2, 'R': 3, 'Q': 4, 'K': 5}
 
 # transposition table
 TRANSPOSITION_TABLE = {} # global dictionary for storing board states and their evaluation scores
@@ -39,12 +38,12 @@ PING_PONG_PENALTY = 0.05  # small penalty to discourage back and forth loops(NN 
 
 '''
 Vectorized DNN eval evaluation
-This is a 768-vector encoding of the chess board, where each piece type has its
+This uses a 782-vector encoding (768 piece planes + 14 aux features).
 '''
 def eval_batch(encoded_boards):
     input_array = np.asarray(encoded_boards, dtype=np.float32) # Convert to numpy array
     if input_array.ndim == 1: # if a single board is provided, reshape to 2D
-        input_array = input_array[np.newaxis, :] # reshape to 1x768
+        input_array = input_array[np.newaxis, :] # reshape to 1x782
     if prediction_graph is not None: # use compiled graph for speed
         predictions = prediction_graph(input_array) # run the model on the input array
     else: # fallback to eager execution
@@ -53,163 +52,6 @@ def eval_batch(encoded_boards):
     if predictions.ndim == 2: # if predictions are 2D, take the first column (single output per board)
         predictions = predictions[:,0] # take the first column
     return predictions # return the predictions as a 1D array
-
-'''
-Piece values for evaluation
-These values are used to evaluate the material on the board.
-'''
-def square_index(r, c): # flatten (row,col) i.e. 0 to 63
-    return r*8 + c
-
-'''
-One-hot encode the board into a 768-vector for efficiently updatable neural network input.
-This builds a fresh encoding from scratch.
-Used at root node of search or when encoding don't already exist for modification
-'''
-def encode_board_nn(board):
-    encoded_vector = np.zeros(768, dtype=np.float32)
-    for row_index in range(8):
-        for col_index in range(8):
-            piece = board[row_index][col_index]
-            if piece != "--":
-                color_offset = 0 if piece[0] == 'w' else 384
-                piece_type_char = piece[1]
-                # Calculate the piece offset using the global map
-                piece_offset = PIECE_TYPE_MAP[piece_type_char] * 64
-                # The square offset is the same as before.
-                square_offset = square_index(row_index, col_index)
-                # Combine the offsets to get the final index
-                index = color_offset + piece_offset + square_offset
-                encoded_vector[index] = 1
-    return encoded_vector
-
-'''
-Lightweight move property helpers for nn encoding.
-These avoid calling chessEngine methods directly for performance reasons.
-During deep search the AI simulates thousands of positions, so repeatedly
-asking the full engine to check captures, promotions etc. would be too slow.
-Instead, we read and interpret the relevant data directly from the Move object
-'''
-# Helper to map promotion choice to final piece code (example, 'Q' to 'wQ'/'bQ')
-def promotion_piece_code(piece_from, promotion_choice):
-    if promotion_choice is None: # if no promotion choice, return the original piece code
-        return piece_from # piece code at the start square (e.g., 'wP' or 'bP')
-    # choice could be 'Q','R','B','N' or full code like 'wQ'/'bQ'
-    if isinstance(promotion_choice, str) and len(promotion_choice) == 2 and promotion_choice[0] in ("w","b"): # if choice is a full piece code
-        return promotion_choice # return the full piece code
-    piece_color = piece_from[0] # 'w' or 'b' # get the color of the piece
-    piece_letter = str(promotion_choice).upper() # convert choice to uppercase letter
-    if piece_letter not in ("Q","R","B","N"): # if choice is not a valid piece type
-        piece_letter = "Q" # default to queen
-    return f"{piece_color}{piece_letter}" # return the piece code with color and type (e.g., 'wQ' or 'bQ')
-
-'''
-Helper to detect immediate "ping-pong" (A->B then B->A) with no capture on either move.
-'''
-def is_ping_pong_bounce(game_state, move):
-    log = game_state.moves_log # retrieve the list of moves made so far in the game
-    if len(log) < 2: # check if there are at least two moves in the log
-        return False # if there are not at least two moves, it is not a ping pong
-    my_last_move = log[-2] # get the previous move made by the current player (move to compare against)
-    # same color and piece type, exact reverse squares, and not a capture/castle on either move
-    if (my_last_move.moved_piece[0] == move.moved_piece[0] and # check if the color of the two moves are the same
-        my_last_move.moved_piece[1] == move.moved_piece[1] and # check if the piece type of the two moves are the same (e.g., both knights)
-        my_last_move.start_row == move.end_row and # check if the starting row of the previous move is the same as the ending row of the current move
-        my_last_move.start_col == move.end_col and # check if the starting column of the previous move is the same as the ending column of the current move
-        my_last_move.end_row   == move.start_row and # check if the ending row of the previous move is the same as the starting row of the current move
-        my_last_move.end_col   == move.start_col and # check if the ending column of the previous move is the same as the starting column of the current move
-        not my_last_move.is_captured and # check if the previous move was not a capture
-        not move.is_captured and # check if the current move is not a capture
-        not my_last_move.is_castling_move and # check if the previous move was not a castling move
-        not move.is_castling_move): # check if the current move is not a castling move
-        return True # if all the conditions are met, it is a ping pong bounce
-    return False # if any of the conditions are not met, it is not a ping pong bounce
-
-'''
-Annotate each move for coding
-This function is a lightweight helper to prepare a Move object for encoding updates.
-It populates necessary attributes by using information already available on the Move object from the engine.
-This removes the redundancy of re-calculating move properties.
-'''
-def annotate_move_for_encoding(game_state, move):
-    # Use move attributes directly from the engine's Move object
-    piece_from = move.moved_piece
-    captured_piece = move.captured_piece
-    is_en_passant = move.is_en_passant
-    is_castling = move.is_castling_move
-
-    # Determine captured piece position for en passant since it's not the end square
-    if is_en_passant:
-        captured_piece_code = "bp" if piece_from[0] == "w" else "wp"
-        captured_row, captured_col = (move.end_row + 1, move.end_col) if piece_from[0] == "w" else (move.end_row - 1, move.end_col)
-    else:
-        captured_piece_code = captured_piece
-        captured_row, captured_col = move.end_row, move.end_col
-    
-    # Handle promotion to get the correct final piece code
-    piece_to = promotion_piece_code(piece_from, getattr(move, "promotion_choice", None))
-
-    # Store these annotations as attributes on the move object for easy access later
-    move._nn_pf = piece_from
-    move._nn_pc = captured_piece_code
-    move._nn_pt = piece_to
-    move._nn_cap_r = captured_row
-    move._nn_cap_c = captured_col
-    move._nn_is_castling = is_castling
-
-'''
-Update an existing encoding to reflect a single move without recomputing from scratch.
-At all deeper nodes, we already encode parent position.
-This is called before game_state.make_move(move).
-'''
-def apply_encoding(encoding_vector, move):
-    # derive basic squares from the move object
-    start_row, start_col = move.start_row, move.start_col
-    end_row, end_col = move.end_row, move.end_col
-
-    # Use pre-annotated move attributes
-    moved_piece_code = move._nn_pf
-    destination_piece_code = move._nn_pt
-    captured_piece_code = move._nn_pc
-    
-    # Helper function to calculate the nn index
-    def get_nn_index(piece_code, row, col):
-        color_offset = 0 if piece_code[0] == 'w' else 384
-        piece_type_char = piece_code[1]
-        piece_offset = PIECE_TYPE_MAP[piece_type_char] * 64
-        square_offset = square_index(row, col)
-        return color_offset + piece_offset + square_offset
-
-    # Handle the moved piece at its origin (this piece is now gone from its original square)
-    start_index = get_nn_index(moved_piece_code, start_row, start_col)
-    encoding_vector[start_index] = 0.0
-
-    # Handle the captured piece (removed from the board)
-    if captured_piece_code != "--" and captured_piece_code is not None:
-        captured_row = move._nn_cap_r
-        captured_col = move._nn_cap_c
-        captured_index = get_nn_index(captured_piece_code, captured_row, captured_col)
-        encoding_vector[captured_index] = 0.0
-
-    # Handle the piece at the destination square after the move
-    end_index = get_nn_index(destination_piece_code, end_row, end_col)
-    encoding_vector[end_index] = 1.0
-
-    # Handle the rook's move during a castling
-    if move._nn_is_castling:
-        rook_code = "wR" if moved_piece_code == "wK" else "bR"
-        if end_col > start_col: # Kingside castling
-            rook_start_col, rook_end_col = 7, 5
-        else: # Queenside castling
-            rook_start_col, rook_end_col = 0, 3
-
-        rook_row = start_row
-        # Clear the rook from its original position.
-        rook_start_index = get_nn_index(rook_code, rook_row, rook_start_col)
-        encoding_vector[rook_start_index] = 0.0
-        # Place the rook at its new position.
-        rook_end_index = get_nn_index(rook_code, rook_row, rook_end_col)
-        encoding_vector[rook_end_index] = 1.0
 
 '''
 Evaluation score of the board based on terminal node cases
@@ -221,8 +63,10 @@ def terminal_eval_score(game_state):
             return -CHECKMATE_SCORE # black wins
         else: # If it's black's turn and the game is checkmate
             return CHECKMATE_SCORE # white wins
+            return -CHECKMATE_SCORE # bad for current side
     elif game_state.is_stalemate: # If the game is in stalemate
         return STALEMATE_SCORE
+        return STALEMATE_SCORE # score 0
     else:
         raise RuntimeError("terminal_eval_score called on non-terminal position")
 
@@ -234,9 +78,10 @@ For each request, it calculates the best move and sends it back via the output q
 '''
 def run_ai_loop(input_queue, output_queue):
     global eval_model, MODEL_INPUT, prediction_graph # declare globals so the model and buffers are accessible in other AI functions
+    if not os.path.exists(MODEL_PATH):
+        print(f"[chessAI] Model file not found: '{MODEL_PATH}'.", flush=True)
     eval_model = tf.keras.models.load_model(MODEL_PATH, compile=False) # Load pre-trained Keras model from disk (compiled=False skips training setup)
-    MODEL_INPUT = np.zeros((1, 768), dtype=np.float32) # Preallocate a NumPy array for the model input (1 position × 768 features), # This avoids allocating a new array for every evaluation call
-
+    MODEL_INPUT = np.zeros((1, chessEncoding.INPUT_DIM), dtype=np.float32) # Preallocate buffer for model input (1 × 782)
     # Define an optional tf.function wrapper to compile the model call for speed
     @tf.function(jit_compile=False) # Convert to a TensorFlow graph for faster repeated calls
     def build_prediction_graph(model):
@@ -284,15 +129,38 @@ def order_moves(legal_moves, depth_from_root):
     return prioritized_moves # Return the list of moves now sorted by priority
 
 '''
+Helper to detect immediate "ping-pong" (A->B then B->A) with no capture on either move.
+'''
+def is_ping_pong_bounce(game_state, move):
+    log = game_state.moves_log # retrieve the list of moves made so far in the game
+    if len(log) < 2: # check if there are at least two moves in the log
+        return False # if there are not at least two moves, it is not a ping pong
+    my_last_move = log[-2] # get the previous move made by the current player (move to compare against)
+    # same color and piece type, exact reverse squares, and not a capture/castle on either move
+    if (my_last_move.moved_piece[0] == move.moved_piece[0] and # check if the color of the two moves are the same
+        my_last_move.moved_piece[1] == move.moved_piece[1] and # check if the piece type of the two moves are the same (e.g., both knights)
+        my_last_move.start_row == move.end_row and # check if the starting row of the previous move is the same as the ending row of the current move
+        my_last_move.start_col == move.end_col and # check if the starting column of the previous move is the same as the ending column of the current move
+        my_last_move.end_row   == move.start_row and # check if the ending row of the previous move is the same as the starting row of the current move
+        my_last_move.end_col   == move.start_col and # check if the ending column of the previous move is the same as the starting column of the current move
+        not my_last_move.is_captured and # check if the previous move was not a capture
+        not move.is_captured and # check if the current move is not a capture
+        not my_last_move.is_castling_move and # check if the previous move was not a castling move
+        not move.is_castling_move): # check if the current move is not a castling move
+        return True # if all the conditions are met, it is a ping pong bounce
+    return False # if any of the conditions are not met, it is not a ping pong bounce
+
+'''
 Helper function to make first recursive call to best move function
 '''
 def get_best_move(game_state, legal_moves):
     global best_moves_list, function_calls, KILLER_MOVES, HISTORY_MOVES # Initialize the empty list of best moves and killer moves' history, next best move to None and function calls to 0
+    TRANSPOSITION_TABLE.clear()
     best_moves_list = [] # Initialize the list of best moves
     function_calls = 0 # Initialize the function calls to 0
     KILLER_MOVES = defaultdict(lambda: [None, None]) # resets the killer moves table for a new search
     HISTORY_MOVES = defaultdict(int) # resets the history moves table for a new search
-    root_enc = encode_board_nn(game_state.board) # encode once at root
+    root_enc = chessEncoding.encode_board_nn(game_state) # encode once at root (includes side-to-move/stm and castling/ep/halfmove)
     turn_multiplier = 1 if game_state.white_to_move else -1 # Determine if it's white's turn
     negamax_alpha_beta_search(game_state, legal_moves, MAX_DEPTH, -CHECKMATE_SCORE, CHECKMATE_SCORE, turn_multiplier, 0, encoding=root_enc)
     # print(f"Number of function calls made: {function_calls}") # check performance of the algorithm
@@ -342,22 +210,24 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
             batch_index_map = []  # list to map evaluation results back to the original move index
             move_scores_raw = [None] * len(moves_batch)  # list to store the raw scores of each move in the batch
             for j, move in enumerate(moves_batch):  # j is batch move index
-                annotate_move_for_encoding(game_state, move)  # minimal annotations for nn board
+                chessEncoding.annotate_move_for_encoding(move)  # minimal annotations for nn board
                 game_state.make_move(move)  # make the move on the actual game state
                 next_legal_moves = game_state.get_valid_moves()  # get the legal moves from the new position
                 if (len(next_legal_moves) == 0) and (game_state.is_checkmate or game_state.is_stalemate):  # If child is terminal (checkmate or stalemate) avoid NN call
-                    move_scores_raw[j] = terminal_eval_score(game_state)  # directly evaluate the terminal state without a neural network call
+                    move_scores_raw[j] = score = turn_multiplier * move_scores_raw[j]*terminal_eval_score(game_state)  # directly evaluate the terminal state without a neural network call
                 else:
                     # non-terminal: build the child encoding snapshot
                     new_enc = encoding.copy()  # create a copy of the parent encoding to apply changes to
-                    apply_encoding(new_enc, move)  # apply the move to the encoding
+                    chessEncoding.apply_encoding(new_enc, move)  # apply the move to the encoding
+                    chessEncoding.update_aux_features(new_enc, game_state)  # sync stm/castling/ep/halfmove after move
                     encoded_boards_to_evaluate.append(new_enc)  # add the new encoding to the batch for evaluation
                     batch_index_map.append(j)  # record the index to map the score back
                 game_state.undo_move()  # undo the move on the actual game state
             if encoded_boards_to_evaluate:  # if there are boards to evaluate
                 preds = eval_batch(encoded_boards_to_evaluate)  # evaluate the batch of boards at once
                 for eval_index, j in enumerate(batch_index_map):  # loop through the evaluation results
-                    move_scores_raw[j] = WEIGHTS["dnn"] * float(preds[eval_index])  # store the final weighted score
+                    raw = float(preds[eval_index]) # White-Centric NN output
+                    move_scores_raw[j] = WEIGHTS["dnn"] * raw
             for j, move in enumerate(moves_batch):
                 score = turn_multiplier * move_scores_raw[j]  # calculate the score for the current player's perspective
                 # Apply ping-pong penalty if the move bounces the same piece back to its previous square
@@ -387,17 +257,18 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
     else:  # When search_depth_left >= 2
         max_score = -CHECKMATE_SCORE  # Initialize to a very low score for the player's best move (max score obtainable)
         for move in legal_moves:  # loop through each legal move the player can make
-            new_enc = encoding.copy()  # copy encoding (fast for 768 floats)
-            annotate_move_for_encoding(game_state, move)
-            apply_encoding(new_enc, move)  # apply encoding changes before mutating the game state
+            new_enc = encoding.copy()  # copy encoding (fast for 782 floats)
+            chessEncoding.annotate_move_for_encoding(move)
+            chessEncoding.apply_encoding(new_enc, move)  # apply encoding changes before mutating the game state
 
             game_state.make_move(move)  # Make the player's move in the game state
+            chessEncoding.update_aux_features(new_enc, game_state)  # sync aux features for the child
             next_possible_moves = game_state.get_valid_moves()  # Get the valid moves for the next possible moves
             score = -negamax_alpha_beta_search(game_state, next_possible_moves, search_depth_left - 1, -beta, -alpha, -turn_multiplier, depth_from_root + 1, new_enc)  # Recursive call to find the best move for the opponent
             game_state.undo_move()  # Undo the player's move to evaluate the next one
             # Apply ping-pong penalty at internal nodes too (score is already from current player's perspective)
             if is_ping_pong_bounce(game_state, move):
-                score -= PING_PONG_PENALTY            
+                score -= PING_PONG_PENALTY             
             # negamax check
             if score > max_score:  # If the score is greater than the current max score
                 max_score = score  # Update the maximum score

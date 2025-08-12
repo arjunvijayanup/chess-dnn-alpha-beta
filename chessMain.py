@@ -5,11 +5,7 @@ import pygame as p
 import chessEngine, chessAI
 from multiprocessing import Process, Queue
 import os
-import chess # for Stockfish engine
-import chess.engine # for Stockfish engine
-import platform
-import shutil
-
+from stockfishHandler import StockfishPlayer 
 
 # Constants for the game
 BOARD_WIDTH = BOARD_HEIGHT = 512
@@ -19,16 +15,16 @@ DIMENSION = 8
 SQ_SIZE = BOARD_HEIGHT // DIMENSION
 MAX_FPS = 20
 IMAGES = {}
-STOCKFISH_ENGINE_DEPTH  = 1 # if used for comparison with Stockfish
+STOCKFISH_ENGINE_DEPTH = 3 # if used for comparison with Stockfish
 FOOTER_HEIGHT = 20
 WINDOW_HEIGHT = BOARD_HEIGHT + FOOTER_HEIGHT
 SCROLL_SPEED = 20
 
 # Who's playing?: Human and/or AI (can be stockfish or custom AI) players
 human_white_player = False # Flag for white player (True if human, False if AI)
-human_black_player = False # Flag for black player (True if human, False if AI)
+human_black_player = True # Flag for black player (True if human, False if AI)
 stockfish_white_player = False # Flag for white player (True if stockfish, False if custom AI we built)
-stockfish_black_player = True # Flag for black player (True if stockfish, False if custom AI we built)
+stockfish_black_player = False # Flag for black player (True if stockfish, False if custom AI we built)
 # Validation on flags to ensure one player cannot be both human and stockfish
 assert not (human_white_player and stockfish_white_player), "White player cannot be both human and Stockfish"
 assert not (human_black_player and stockfish_black_player), "Black player cannot be both human and Stockfish"
@@ -63,33 +59,7 @@ def set_game_caption():
 
 # Get the directory of the current file
 base_dir = os.path.dirname(os.path.abspath(__file__))
-
-# Set up Stockfish engine path and depth for AI comparison (if enabled, available only for Windows and macOS)
-# Stockfish was downloaded from https://stockfishchess.org/download/
-if stockfish_white_player or stockfish_black_player:
-    # Detect OS
-    system = platform.system()  # Windows, Linux, or Darwin (macOS)
-    if system == "Windows":
-        # .exe location
-        STOCKFISH_PATH = os.path.join(base_dir, "stockfish/stockfish-windows-x86-64-avx2.exe") # Path to the Stockfish engine executable
-
-    elif system == "Darwin":
-        print("Detected macOS system.")
-        # macOS (Apple-Silicon chip)
-        # This will require changes to Privacy & Security settings to allow the app to run
-        STOCKFISH_PATH = os.path.join(base_dir, "stockfish/stockfish-macos-m1-apple-silicon")
-
-    else:
-        raise RuntimeError(f"Unsupported OS: {system!r}")
-
-    # Fallback: if it’s not there or not executable try a PATH lookup
-    if not os.path.isfile(STOCKFISH_PATH) or not os.access(STOCKFISH_PATH, os.X_OK):
-        fallback = shutil.which("stockfish")
-        if fallback:
-            STOCKFISH_PATH = fallback
-        else:
-            raise FileNotFoundError(f"Could not find Stockfish binary at {STOCKFISH_PATH!r}, nor on your PATH.")
-        
+    
 """
 Initializing global dict of images. Called once in the main
 """
@@ -131,9 +101,12 @@ def main():
     AI_thinking = False # Flag for AI thinking (True if AI is thinking, False if not)
     AI_process = None # Process for AI move finding
     move_undone = False # Flag for move undoing (True if move is undone, False if not)
-    stockfish_engine = None
-    if(stockfish_white_player or stockfish_black_player): 
-        stockfish_engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
+    
+    # Stockfish Initialization:
+    stockfish_player = None
+    if stockfish_white_player or stockfish_black_player:
+        stockfish_player = StockfishPlayer(base_dir, STOCKFISH_ENGINE_DEPTH)
+        print("Stockfish engine has been initialized.")
 
     ai_input_queue = Queue()
     ai_output_queue = Queue()
@@ -259,7 +232,7 @@ def main():
                 print("AI finished thinking.") # Print AI finished thinking message
                 #if not return_queue.empty(): # If the return queue is not empty
                 pos_key_returned, AI_move = ai_output_queue.get() # Get the best move from the AI
-                #### TEMPORARILY disabling fallback for testing purposes ###
+                # TEMPORARILY disabling fallback for testing purposes
                 # if AI_move is None: # If best move is none
                     #AI_move = chessAI.random_AI_move(legal_moves) # Get a random move from the Random AI function
                 if AI_move is not None and pos_key_returned == len(game_state.moves_log):
@@ -274,16 +247,9 @@ def main():
         elif stockfish_turn and not is_game_over and not promotion_pending_move and not human_turn:
             print("Stockfish is thinking...")
             footer_text = "Stockfish is thinking..."
-            fen = game_state.to_fen() # Convert the game state to FEN format for Stockfish
-            board = chess.Board(fen)
-            result = stockfish_engine.play(board, chess.engine.Limit(depth=STOCKFISH_ENGINE_DEPTH))
+            # Call the get_best_move method from the StockfishPlayer class
+            sf_move = stockfish_player.get_best_move(game_state)
             print("Stockfish finished thinking.")
-            sfm = result.move
-            start_row = 7 - (sfm.from_square // 8)
-            start_col = sfm.from_square % 8
-            end_row = 7 - (sfm.to_square // 8)
-            end_col = sfm.to_square  % 8
-            sf_move = chessEngine.Move((start_row, start_col), (end_row, end_col), game_state.board)
             game_state.make_move(sf_move)
             move_executed, should_animate = True, True
         
@@ -315,9 +281,9 @@ def main():
         
         if game_state.is_checkmate or game_state.is_stalemate : # If checkmated, gameover and print checkmate message
             is_game_over = True
-            if game_state.is_stalemate: 
-                print_text = 'Stalemate!' 
-            else: 
+            if game_state.is_stalemate:
+                print_text = 'Stalemate!'
+            else:
                 print_text = 'Black wins by Checkmate!' if game_state.white_to_move else 'White wins by Checkmate!'
             draw_endgame_text(screen, print_text, endgame_text_font) # Draw the endgame text on the screen
         p.display.flip() # Update the display
@@ -325,11 +291,8 @@ def main():
     if AI_process and AI_process.is_alive():
         AI_process.terminate()
         AI_process.join()
-    if stockfish_engine is not None:
-        try:
-            stockfish_engine.quit()
-        except (chess.engine.EngineTerminatedError, chess.engine.EngineError, BrokenPipeError):
-            pass
+    if stockfish_player is not None:
+        stockfish_player.quit_engine()
 
 """
 Graphics in the current game state
@@ -469,7 +432,7 @@ def animate_move(move, screen, board, clock):
         p.draw.rect(screen, color, end_square) # Replacing piece with square color
         
         # Draw the captured piece on top of the rectangle drawn
-        if move.captured_piece != '--': 
+        if move.captured_piece != '--':
             if move.is_en_passant:  # If the move is an en-passant move
                 en_passant_row = move.end_row - 1 if move.moved_piece[0] == 'w' else move.end_row + 1  # The row where the captured (en-passanted) pawn was
                 end_square = p.Rect(move.end_col * SQ_SIZE, en_passant_row * SQ_SIZE, SQ_SIZE, SQ_SIZE)    # Draw the square where the captured (en-passanted) pawn was
@@ -483,7 +446,7 @@ Draws text for game over messages
 """
 def draw_endgame_text(screen, text, font):
     text_surface = font.render(text, 0, p.Color('Gray')) # Render in black color with no aliasing
-    text_rect = p.Rect(0, 0, BOARD_WIDTH, BOARD_HEIGHT).move(BOARD_WIDTH/2 - text_surface.get_width()/2, 
+    text_rect = p.Rect(0, 0, BOARD_WIDTH, BOARD_HEIGHT).move(BOARD_WIDTH/2 - text_surface.get_width()/2,
                                                              BOARD_HEIGHT/2 - text_surface.get_height()/2) # Centering the text on the board
     screen.blit(text_surface, text_rect)
     text_surface = font.render(text, 0, p.Color("Black"))
