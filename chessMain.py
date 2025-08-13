@@ -236,7 +236,7 @@ def main():
             if not ai_output_queue.empty():
                 print("AI finished thinking.") # Print AI finished thinking message
                 #if not return_queue.empty(): # If the return queue is not empty
-                pos_key_returned, AI_move = ai_output_queue.get() # Get the best move from the AI
+                pos_key_returned, AI_move, LAST_STATS = ai_output_queue.get() # Get the best move from the AI
                 # TEMPORARILY disabling fallback for testing purposes
                 # if AI_move is None: # If best move is none
                     #AI_move = chessAI.random_AI_move(legal_moves) # Get a random move from the Random AI function

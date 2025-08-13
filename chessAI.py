@@ -8,6 +8,8 @@ import random # for random move selection in fallback logic
 from collections import defaultdict # for using killer moves' history tables
 import os  # for model file existence check
 import chessEncoding
+import time
+from dataclasses import dataclass
 
 # Initialize the opening book for the AI
 from chessOpening import OpeningBook
@@ -53,6 +55,29 @@ HISTORY_MOVES = defaultdict(int) # MOVES: stores a score for each move, incremen
 PING_PONG_PENALTY = 0.02  # penalty to discourage back and forth loops(NN interval: [-1,1])
 DRAWISH_EPSILON   = 0.15  # only discourage ping-pong if position is roughly equal
 
+# --- light-weight search stats so the arena can log NPS/TT/etc. ---
+@dataclass
+class SearchStats:
+    nodes: int = 0
+    tt_probes: int = 0
+    tt_hits: int = 0
+    tt_stores: int = 0
+    beta_cutoffs: int = 0
+    first_move_cutoffs: int = 0
+    killer_uses: int = 0
+    history_uses: int = 0
+    branch_sum: int = 0
+    branch_samples: int = 0
+    ms: float = 0.0  # elapsed ms for the whole root search
+    req_depth: int = 0           # what we asked for (MAX_DEPTH at root)
+    max_ply_seen: int = 0        # deepest ply actually reached
+    
+    @property
+    def nps(self):
+        return self.nodes / (self.ms / 1000.0) if self.ms > 0 else 0.0
+
+LAST_STATS = SearchStats()
+
 '''
 Vectorized DNN eval evaluation
 This uses a 782-vector encoding (768 piece planes + 14 aux features).
@@ -91,8 +116,11 @@ It loads the neural network model once (for efficiency) and then waits
 in a loop for game states from the main process via the input queue.
 For each request, it calculates the best move and sends it back via the output queue.
 '''
-def run_ai_loop(input_queue, output_queue):
-    global eval_model, MODEL_INPUT, prediction_graph # declare globals so the model and buffers are accessible in other AI functions
+def run_ai_loop(input_queue, output_queue, depth=None):
+    global eval_model, MAX_DEPTH, MODEL_INPUT, prediction_graph # declare globals so the model and buffers are accessible in other AI functions
+    if depth is not None:
+        MAX_DEPTH = int(depth)
+    print(f"[chessAI] Using MAX_DEPTH={MAX_DEPTH}", flush=True)
     if not os.path.exists(MODEL_PATH):
         print(f"[chessAI] Model file not found: '{MODEL_PATH}'.", flush=True)
     eval_model = tf.keras.models.load_model(MODEL_PATH, compile=False) # Load pre-trained Keras model from disk (compiled=False skips training setup)
@@ -115,7 +143,9 @@ def run_ai_loop(input_queue, output_queue):
         # pos_key -> move number at time of request (for stale-move detection)
         pos_key, game_state, legal_moves = input_queue.get()
         best_move = get_best_move(game_state, legal_moves) # Use AI search to select the best move from the current position
-        output_queue.put((pos_key, best_move)) # Send the result back to the main process along with the position key
+        # Send the result back to the main process along with the position key
+        # Also, returning stats to log for arena.py which logs Nodes per sec, Transition table etc
+        output_queue.put((pos_key, best_move, LAST_STATS))
 
 '''
 Function to prioritize legal moves for the search at a specific depth.
@@ -218,14 +248,19 @@ def get_best_move(game_state, legal_moves):
     except Exception as e: # Catch any exceptions that occur during book lookup
         print("[Book] error:", repr(e)) # Print the error
 
-    global best_moves_list, function_calls, KILLER_MOVES, HISTORY_MOVES # Initialize the empty list of best moves and killer moves' history, next best move to None and function calls to 0
+    # Initialize the empty list of best moves and killer moves' history, next best move to None and function calls to 0 and also stats for arena.py
+    global best_moves_list, function_calls, KILLER_MOVES, HISTORY_MOVES, LAST_STATS
     TRANSPOSITION_TABLE.clear()
     best_moves_list = [] # Initialize the list of best moves
     function_calls = 0 # Initialize the function calls to 0
     KILLER_MOVES = defaultdict(lambda: [None, None]) # resets the killer moves table for a new search
     HISTORY_MOVES = defaultdict(int) # resets the history moves table for a new search
+    LAST_STATS = SearchStats() # resets the search stats for a new search
+    t0 = time.perf_counter() # Record the start time
     root_enc = chessEncoding.encode_board_nn(game_state) # encode once at root (includes side-to-move/stm and castling/ep/halfmove)
     turn_multiplier = 1 if game_state.white_to_move else -1 # Determine if it's white's turn
+    LAST_STATS.ms = (time.perf_counter() - t0) * 1000 # Record the elapsed time in sec
+    LAST_STATS.req_depth = MAX_DEPTH # Record the requested search depth
     negamax_alpha_beta_search(game_state, legal_moves, MAX_DEPTH, -CHECKMATE_SCORE, CHECKMATE_SCORE, turn_multiplier, 0, encoding=root_enc)
     # print(f"Number of function calls made: {function_calls}") # check performance of the algorithm
     if best_moves_list: # If there are best moves found
@@ -240,14 +275,16 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
                                      turn_multiplier, depth_from_root, encoding):
     global best_moves_list, function_calls  # Initialize the empty best moves list, next best move to None and function calls to 0
     function_calls += 1  # Increment the function calls count
+    LAST_STATS.nodes += 1  # Increment the node count for test stats 
     fen_key = game_state.to_fen()  # for transposition table, creates a unique key for the board state
     alpha_orig = alpha  # transposition stores original alpha to classify the stored result
     beta_orig = beta
     penalized_any = False  # track if any child score at this node was ping-pong penalized
-
+    LAST_STATS.tt_probes += 1  # Increment the test stats transposition table probe count
     # Check if the current position is in the transposition table
     entry = TRANSPOSITION_TABLE.get(fen_key)  # retrieves a stored entry in transposition table if it exists
     if entry and entry.get('tt_depth', -1) >= search_depth_left:  # check if the entry in transposition table is valid for the current search depth
+        LAST_STATS.tt_hits += 1  # Increment the test stats transposition table hit count
         flag = entry.get('flag', EXACT) # gets the flags from the stored entry, defaults to EXACT if no flag is present.
         score = entry['score'] # retrieve the stored evaluation score from the entry
         if flag == EXACT: # checks if the stored score is an exact evaluation (i.e., not a bound)
@@ -257,6 +294,7 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
         elif flag == UPPER: # checks if the stored score is an upper bound (i.e., the best score was at most this value)
             beta = min(beta, score) # update the beta value with the lower of its current value or the stored upper bound. This prunes branches that can't be worse than this score.
         if alpha >= beta: # checks for an alpha-beta cutoff after updating the bounds. If alpha is now greater than or equal to beta a cutoff is possible.
+            LAST_STATS.beta_cutoffs += 1  # Increment the test stats beta cutoff count
             return score  # return the stored score, as the current branch can be safely pruned.
     
     if not legal_moves:  # if no more legal moves
@@ -273,6 +311,8 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
         return score
 
     legal_moves = order_moves(legal_moves, depth_from_root) # order legal moves at the current depth for better pruning using captures, killer moves and history scores
+    LAST_STATS.branch_sum += len(legal_moves) # add the number of legal moves to the branch sum for test stats
+    LAST_STATS.branch_samples += 1 # increment the branch sample count for test stats
     # When search_depth_left == 1 i.e., batched leaf evaluation (batching per node at depth-1, not all leaves of the whole tree)
     if search_depth_left == 1:  # if we are at the second last depth of our search
         max_score = -CHECKMATE_SCORE  # set the max score to the lowest possible value
@@ -310,6 +350,7 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
                     raw = float(preds[eval_index]) # White-Centric NN output
                     move_scores_raw[j] = WEIGHTS["dnn"] * raw
             for j, move in enumerate(moves_batch):
+                LAST_STATS.max_ply_seen = max(LAST_STATS.max_ply_seen, depth_from_root + 1)
                 score = turn_multiplier * move_scores_raw[j]  # calculate the score for the current player's perspective
                 if ping_pong_penalty_needed(game_state, move, score, proposed_key=proposed_keys[j]): # cycle OR same-piece bounce check and only in drawish spots
                     score -= PING_PONG_PENALTY
@@ -321,8 +362,15 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
                 if max_score > alpha:
                     alpha = max_score  # Update alpha to the maximum score found
                 if alpha >= beta:  # If alpha is greater than or equal to beta
+                    LAST_STATS.beta_cutoffs += 1  # Increment the test stats beta cutoff count
+                    if j==0 and i==0:  # check for a first move beta cutoff (root)
+                        LAST_STATS.first_move_cutoffs += 1  # Increment the test stats first move beta cutoff count
                     if getattr(move, 'captured_piece', '--') == '--': # killer history updates on cutoff (non-captures only)
                         killers = KILLER_MOVES[depth_from_root] # retrieve killer moves for the current depth
+                        if move.unique_id == killers[0] or move.unique_id == killers[1]:
+                            LAST_STATS.killer_uses += 1  # Increment the test stats killer use count
+                        if HISTORY_MOVES.get(move.unique_id, 0) > 0:
+                            LAST_STATS.history_uses += 1  # Increment the test stats history use count
                         if killers[0] != move.unique_id:
                             killers[1] = killers[0]
                             killers[0] = move.unique_id # update the killer move ID list
@@ -335,7 +383,8 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
 
     else:  # When search_depth_left >= 2
         max_score = -CHECKMATE_SCORE  # Initialize to a very low score for the player's best move (max score obtainable)
-        for move in legal_moves:  # loop through each legal move the player can make
+        for idx, move in enumerate(legal_moves):  # loop through each legal move the player can make
+            LAST_STATS.max_ply_seen = max(LAST_STATS.max_ply_seen, depth_from_root + 1)
             new_enc = encoding.copy()  # copy encoding (fast for 782 floats)
             chessEncoding.annotate_move_for_encoding(move)
             chessEncoding.apply_encoding(new_enc, move)  # apply encoding changes before mutating the game state
@@ -357,8 +406,15 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
             if max_score > alpha:
                 alpha = max_score  # Update alpha to the maximum score found
             if alpha >= beta:  # If alpha is greater than or equal to beta
+                LAST_STATS.beta_cutoffs += 1  # Increment the test stats beta cutoff count
+                if idx == 0:  # check for a first move beta cutoff (root)
+                    LAST_STATS.first_move_cutoffs += 1  # Increment the test stats first move beta cutoff count
                 if getattr(move, 'captured_piece', '--') == '--': # killer history updates on cutoff (non-captures only)
                     killers = KILLER_MOVES[depth_from_root] # retrieve killer moves for the current depth
+                    if move.unique_id == killers[0] or move.unique_id == killers[1]:
+                        LAST_STATS.killer_uses += 1  # Increment the test stats killer use count
+                    if HISTORY_MOVES.get(move.unique_id, 0) > 0:
+                        LAST_STATS.history_uses += 1  # Increment the test stats history use count
                     if killers[0] != move.unique_id:
                         killers[1] = killers[0]
                         killers[0] = move.unique_id # update the killer move ID list
@@ -375,6 +431,7 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
     if penalized_any and flag == EXACT:
         flag = LOWER  # avoid caching history-tainted EXACT scores
     TRANSPOSITION_TABLE[fen_key] = {'score': max_score, 'tt_depth': search_depth_left, 'flag': flag}  # store the final score with its flag
+    LAST_STATS.tt_stores += 1  # Increment the test stats transposition table store count
     return max_score  # Return the maximum score found
 
 '''
