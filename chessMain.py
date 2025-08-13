@@ -21,13 +21,37 @@ WINDOW_HEIGHT = BOARD_HEIGHT + FOOTER_HEIGHT
 SCROLL_SPEED = 20
 
 # Who's playing?: Human and/or AI (can be stockfish or custom AI) players
-human_white_player = False # Flag for white player (True if human, False if AI)
-human_black_player = True # Flag for black player (True if human, False if AI)
+human_white_player = True # Flag for white player (True if human, False if AI)
+human_black_player = False # Flag for black player (True if human, False if AI)
 stockfish_white_player = False # Flag for white player (True if stockfish, False if custom AI we built)
 stockfish_black_player = False # Flag for black player (True if stockfish, False if custom AI we built)
+
 # Validation on flags to ensure one player cannot be both human and stockfish
 assert not (human_white_player and stockfish_white_player), "White player cannot be both human and Stockfish"
 assert not (human_black_player and stockfish_black_player), "Black player cannot be both human and Stockfish"
+
+# Selection state 
+selection_made = False
+selected_white = "Human" # initial dropdown default
+selected_black = "AI"  # initial dropdown default (matches previous setup)
+
+AI_process = None
+ai_input_queue = None
+ai_output_queue = None
+stockfish_player = None
+
+def apply_selection_to_flags(white_role, black_role):
+    global human_white_player, human_black_player, stockfish_white_player, stockfish_black_player
+    human_white_player = (white_role == "Human")
+    stockfish_white_player = (white_role == "Stockfish")
+    human_black_player  = (black_role == "Human")
+    stockfish_black_player = (black_role == "Stockfish")
+    # basic sanity (mutual exclusion already enforced by choices)
+    assert not (human_white_player and stockfish_white_player)
+    assert not (human_black_player and stockfish_black_player)
+    ai_white = (white_role == "AI")
+    ai_black = (black_role == "AI")
+    return ai_white, ai_black
 
 """
 Return the player name (Human, AI, or Stockfish) based on color and configuration.
@@ -59,6 +83,85 @@ def set_game_caption():
 
 # Get the directory of the current file
 base_dir = os.path.dirname(os.path.abspath(__file__))
+
+"""
+Simple UI widgets for a modal start popup.
+"""
+class Dropdown:
+    def __init__(self, rect, font, label, options, initial="Human"):
+        self.rect = p.Rect(rect)
+        self.font = font
+        self.label = label
+        self.options = options
+        self.value = initial
+        self.open = False
+        self.item_height = self.font.get_height() + 8
+
+    def handle_event(self, event):
+        if event.type == p.MOUSEBUTTONDOWN and event.button == 1:
+            mx, my = event.pos
+            if self.rect.collidepoint(mx, my):
+                self.open = not self.open
+                return True
+            if self.open:
+                for i, opt in enumerate(self.options):
+                    item_rect = p.Rect(self.rect.x, self.rect.y + self.rect.height + i*self.item_height,
+                                       self.rect.width, self.item_height)
+                    if item_rect.collidepoint(mx, my):
+                        self.value = opt
+                        self.open = False
+                        return True
+                self.open = False
+        return False
+
+    def draw(self, surf):
+        lbl = self.font.render(self.label, True, p.Color("white"))
+        surf.blit(lbl, (self.rect.x, self.rect.y - self.font.get_height() - 4))
+        p.draw.rect(surf, p.Color("gray20"), self.rect, border_radius=6)
+        txt = self.font.render(self.value, True, p.Color("white"))
+        surf.blit(txt, (self.rect.x + 8, self.rect.y + (self.rect.height - txt.get_height())//2))
+        p.draw.rect(surf, p.Color("gray60"), self.rect, 1, border_radius=6)
+        if self.open:
+            for i, opt in enumerate(self.options):
+                item_rect = p.Rect(self.rect.x, self.rect.y + self.rect.height + i*self.item_height,
+                                   self.rect.width, self.item_height)
+                p.draw.rect(surf, p.Color("gray25"), item_rect)
+                t = self.font.render(opt, True, p.Color("white"))
+                surf.blit(t, (item_rect.x + 8, item_rect.y + (item_rect.height - t.get_height())//2))
+                p.draw.rect(surf, p.Color("gray60"), item_rect, 1)
+
+class Button:
+    def __init__(self, rect, font, text):
+        self.rect = p.Rect(rect)
+        self.font = font
+        self.text = text
+
+    def handle_event(self, event):
+        if event.type == p.MOUSEBUTTONDOWN and event.button == 1:
+            if self.rect.collidepoint(event.pos):
+                return True
+        return False
+
+    def draw(self, surf):
+        p.draw.rect(surf, p.Color("dodgerblue3"), self.rect, border_radius=8)
+        t = self.font.render(self.text, True, p.Color("white"))
+        surf.blit(t, (self.rect.centerx - t.get_width()//2, self.rect.centery - t.get_height()//2))
+        p.draw.rect(surf, p.Color("lightsteelblue"), self.rect, 2, border_radius=8)
+
+def draw_start_popup(screen, title_font, font, white_dd, black_dd, start_btn):
+    overlay = p.Surface(screen.get_size(), p.SRCALPHA)
+    overlay.fill((0, 0, 0, 180))
+    screen.blit(overlay, (0, 0))
+    card_w, card_h = 440, 340
+    card_rect = p.Rect((screen.get_width() - card_w)//2, (screen.get_height() - card_h)//2, card_w, card_h)
+    p.draw.rect(screen, p.Color("gray15"), card_rect, border_radius=12)
+    p.draw.rect(screen, p.Color("gray60"), card_rect, 1, border_radius=12)
+    title = title_font.render("Choose Players", True, p.Color("white"))
+    screen.blit(title, (card_rect.centerx - title.get_width()//2, card_rect.y + 16))
+    white_dd.draw(screen)
+    black_dd.draw(screen)
+    start_btn.draw(screen)
+
     
 """
 Initializing global dict of images. Called once in the main
@@ -93,26 +196,62 @@ def main():
 
     set_game_caption() # Set the game caption based on the players
     load_images() # Load the images for the pieces before the while loop
+
+    # Start-of-game popup for selecting players
+    global selection_made, selected_white, selected_black
+    global AI_process, ai_input_queue, ai_output_queue, stockfish_player
+
+    ui_font = p.font.SysFont("Arial", 18, False, False)
+    title_font = p.font.SysFont("Arial", 26, True, False)
+
+    card_w, card_h = 440, 340
+    card_x = (screen.get_width() - card_w)//2
+    card_y = (screen.get_height() - card_h)//2
+
+    white_dd = Dropdown((card_x + 40,  card_y + 80, 160, 36), ui_font, "Player 1 (White)", ["Human", "AI", "Stockfish"], initial=selected_white)
+    black_dd = Dropdown((card_x + 240, card_y + 80, 160, 36), ui_font, "Player 2 (Black)", ["Human", "AI", "Stockfish"], initial=selected_black)
+    start_btn = Button((card_x + (card_w - 160)//2, card_y + 240, 160, 44), ui_font, "Start Game")
+
+    while not selection_made:
+        clock.tick(30)
+        for event in p.event.get():
+            if event.type == p.QUIT:
+                return
+            white_dd.handle_event(event)
+            black_dd.handle_event(event)
+            if start_btn.handle_event(event):
+                # if a dropdown is open, close it and ignore this click (prevents overlap issues)
+                if white_dd.open or black_dd.open:
+                    white_dd.open = False
+                    black_dd.open = False
+                    continue
+                selected_white = white_dd.value
+                selected_black = black_dd.value
+                ai_white, ai_black = apply_selection_to_flags(selected_white, selected_black)
+                set_game_caption()
+                if (stockfish_white_player or stockfish_black_player) and stockfish_player is None:
+                    stockfish_player = StockfishPlayer(base_dir, STOCKFISH_ENGINE_DEPTH)
+                    print("Stockfish engine initialized once after selection.")
+                if (ai_white or ai_black) and AI_process is None:
+                    ai_input_queue = Queue()
+                    ai_output_queue = Queue()
+                    AI_process = Process(target=chessAI.run_ai_loop, args=(ai_input_queue, ai_output_queue))
+                    AI_process.start()
+                    print("Custom AI process started after selection.")
+                selection_made = True
+
+        draw_board(screen)
+        draw_start_popup(screen, title_font, ui_font, white_dd, black_dd, start_btn)
+        p.display.flip()
+
     is_running = True # Variable to control the main loop
     selected_square = () # Tuple (row,col) to store the last click of square selected by the user
     click_history = [] # List to store the clicks made by the player (two tuples: [(row, col), (row, col)])
     is_game_over = False # Flag for when game ends
     promotion_pending_move = None
     AI_thinking = False # Flag for AI thinking (True if AI is thinking, False if not)
-    AI_process = None # Process for AI move finding
     move_undone = False # Flag for move undoing (True if move is undone, False if not)
     
-    # Stockfish Initialization:
-    stockfish_player = None
-    if stockfish_white_player or stockfish_black_player:
-        stockfish_player = StockfishPlayer(base_dir, STOCKFISH_ENGINE_DEPTH)
-        print("Stockfish engine has been initialized.")
-
-    ai_input_queue = Queue()
-    ai_output_queue = Queue()
-    AI_process = Process(target=chessAI.run_ai_loop, args=(ai_input_queue, ai_output_queue))
-    AI_process.start()
-
     while is_running:
         clock.tick(MAX_FPS)
         # If human player is playing, set human_turn to True
@@ -155,6 +294,7 @@ def main():
                                 if move_to_make.is_pawn_promotion:
                                     promotion_pending_move = move_to_make
                                     print("PAWN PROMOTION: Press 'Q', 'R', 'B', or 'N'.")
+                                    footer_text = "Promote pawn: press Q / R / B / N"
                                 else:
                                     # board/move consistency guard
                                     board_piece = game_state.board[move_to_make.start_row][move_to_make.start_col]
@@ -197,6 +337,7 @@ def main():
                         game_state.make_move(promotion_pending_move, promotion_choice)
                         move_executed, should_animate = True, True
                         promotion_pending_move, selected_square, click_history = None, (), []
+                        footer_text = ""  # clear promotion hint after committing
                 else:
                     if event.key == p.K_z: # If 'z' key is pressed 
                         game_state.undo_move() # Undo the last move made in the game state
@@ -204,7 +345,7 @@ def main():
                         legal_moves = game_state.get_valid_moves()
                         selected_square, click_history = (), [] # Undo any square selections
                         if AI_thinking: # Flush any pending AI outputs so a late result can't apply to the new position
-                            while not ai_output_queue.empty():
+                            while ai_output_queue is not None and not ai_output_queue.empty():
                                 try:
                                     ai_output_queue.get_nowait()
                                 except:
@@ -218,7 +359,7 @@ def main():
                         move_executed, should_animate, is_game_over = False, False, False
                         move_undone = False # Reset the move undone flag
                         if AI_thinking: # If AI was thinking, flush any pending outputs so a late result can't apply to the new game
-                            while not ai_output_queue.empty():
+                            while ai_output_queue is not None and not ai_output_queue.empty():
                                 try:
                                     ai_output_queue.get_nowait()
                                 except:
@@ -233,7 +374,7 @@ def main():
                 footer_text = "AI is thinking..."
                 pos_key = len(game_state.moves_log)
                 ai_input_queue.put((pos_key, game_state, legal_moves))
-            if not ai_output_queue.empty():
+            if ai_output_queue is not None and not ai_output_queue.empty():
                 print("AI finished thinking.") # Print AI finished thinking message
                 #if not return_queue.empty(): # If the return queue is not empty
                 pos_key_returned, AI_move, LAST_STATS = ai_output_queue.get() # Get the best move from the AI
@@ -325,7 +466,7 @@ def draw_game_state(screen, game_state, legal_moves, selected_square, promotion_
 Draws the squares on the chess board.
 """
 def draw_board(screen):
-    colors = [p.color.Color("lightyellow"), p.color.Color("darkolivegreen")]  # Define the colors for the squares
+    colors = [p.Color("lightyellow"), p.Color("darkolivegreen")]  # Define the colors for the squares
     for row in range(DIMENSION):  # Loop through each row
         for col in range(DIMENSION): # Loop through each column
             color = colors[((row + col) % 2)]  # Alternate colors for squares
@@ -434,7 +575,7 @@ def draw_footer(screen, font, text):
 Animating chess piece movement
 """
 def animate_move(move, screen, board, clock):
-    colors = [p.color.Color("lightyellow"), p.color.Color("darkolivegreen")]
+    colors = [p.Color("lightyellow"), p.Color("darkolivegreen")]
     row_delta, col_delta = move.end_row - move.start_row, move.end_col - move.start_col # Row and column change
     frames_per_square = 5 # Frames per square
     frame_count = (abs(row_delta) + abs(col_delta)) * frames_per_square  # total frame count b/w rows and cols

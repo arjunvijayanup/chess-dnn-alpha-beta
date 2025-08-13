@@ -31,6 +31,11 @@ STALEMATE_SCORE = 0 # score assigned to stalemate positions
 MAX_DEPTH = 4 # search depth for negamax
 MODEL_PATH = "lichess_eval_model.keras" # filepath to trained keras model
 MAX_LEAF_BATCH = 16 # batched leaf evaluation batch size (legal moves per node mostly < 100)
+PAWN_PROMOTION_ORDER_BONUS = 200 # bonus to prioritize move ordering (for pruning) based on pawn promotion
+CAPTURE_ORDER_BONUS = 100 # bonus to prioritize move ordering (for pruning) based on capture
+KILLER_MOVE_ORDER_BONUS = 50 # bonus to prioritize move ordering (for pruning) based on killer moves
+PING_PONG_PENALTY = 0.02  # penalty to discourage back and forth loops(NN interval: [-1,1])
+DRAWISH_EPSILON   = 0.15  # only discourage ping-pong if position is roughly equal
 
 # Weights for evaluation components, extra features can be added later (example: mobility, king safety, etc.)
 WEIGHTS = {
@@ -50,10 +55,6 @@ EXACT, LOWER, UPPER = 0, 1, 2 # transposition flags to classify the stored score
 # History of good moves (large table for long-term storage)
 KILLER_MOVES = defaultdict(lambda: [None, None]) # two killers per ply (auto-creates [None, None] for unseen ply), stores non-capture moves that caused a beta cutoff at a given depth
 HISTORY_MOVES = defaultdict(int) # MOVES: stores a score for each move, incremented when the move causes a cutoff
-
-# Ping-pong penalty and score thresholds for a "drawish" position
-PING_PONG_PENALTY = 0.02  # penalty to discourage back and forth loops(NN interval: [-1,1])
-DRAWISH_EPSILON   = 0.15  # only discourage ping-pong if position is roughly equal
 
 # --- light-weight search stats so the arena can log NPS/TT/etc. ---
 @dataclass
@@ -149,7 +150,7 @@ def run_ai_loop(input_queue, output_queue, depth=None):
 
 '''
 Function to prioritize legal moves for the search at a specific depth.
-Basic move ordering using captures, killer moves and history heuristic.
+Basic move ordering using captures, pawn promotion, killer moves and history heuristic.
 This helps to find cut-off earlier for pruning, increasing efficiency.
 '''
 def order_moves(legal_moves, depth_from_root): 
@@ -159,6 +160,9 @@ def order_moves(legal_moves, depth_from_root):
     killer_moveIDs_at_depth = KILLER_MOVES[depth_from_root] # retrieve the two killer move IDs for the current search depth
     for move in legal_moves: # iterate over each legal move to calculate its score
         score = 0 # initialize the score for the current move
+        # Promotion priority: search promotion moves before everything else
+        if getattr(move, 'is_pawn_promotion', False):
+            score += PAWN_PROMOTION_ORDER_BONUS
         # Capture priority: Give a high score to captures
         is_capture = (getattr(move, 'captured_piece', '--') != '--') # check if the move is a capture
         if is_capture: # if the move is a capture
