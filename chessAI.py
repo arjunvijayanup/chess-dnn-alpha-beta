@@ -48,7 +48,6 @@ EXACT, LOWER, UPPER = 0, 1, 2 # transposition flags to classify the stored score
 # History of good moves (large table for long-term storage)
 KILLER_MOVES = defaultdict(lambda: [None, None]) # two killers per ply (auto-creates [None, None] for unseen ply), stores non-capture moves that caused a beta cutoff at a given depth
 HISTORY_MOVES = defaultdict(int) # MOVES: stores a score for each move, incremented when the move causes a cutoff
-PING_PONG_PENALTY = 0.05  # small penalty to discourage back and forth loops(NN interval: [-1,1])
 
 '''
 Vectorized DNN eval evaluation
@@ -129,7 +128,7 @@ def order_moves(legal_moves, depth_from_root):
     for move in legal_moves: # iterate over each legal move to calculate its score
         score = 0 # initialize the score for the current move
         # Capture priority: Give a high score to captures
-        is_capture = move.is_captured # check if the move is a capture
+        is_capture = (getattr(move, 'captured_piece', '--') != '--') # check if the move is a capture
         if is_capture: # if the move is a capture
             score += 100 # add a high score to prioritize captures
         # Killer move priority: give a bonus to non-capture killer moves
@@ -141,28 +140,6 @@ def order_moves(legal_moves, depth_from_root):
     # Sort the legal moves in descending order based on their calculated score
     prioritized_moves = sorted(legal_moves, key=lambda m: move_scores.get(m.unique_id, 0), reverse=True)
     return prioritized_moves # Return the list of moves now sorted by priority
-
-'''
-Helper to detect immediate "ping-pong" (A->B then B->A) with no capture on either move.
-'''
-def is_ping_pong_bounce(game_state, move):
-    log = game_state.moves_log # retrieve the list of moves made so far in the game
-    if len(log) < 2: # check if there are at least two moves in the log
-        return False # if there are not at least two moves, it is not a ping pong
-    my_last_move = log[-2] # get the previous move made by the current player (move to compare against)
-    # same color and piece type, exact reverse squares, and not a capture/castle on either move
-    if (my_last_move.moved_piece[0] == move.moved_piece[0] and # check if the color of the two moves are the same
-        my_last_move.moved_piece[1] == move.moved_piece[1] and # check if the piece type of the two moves are the same (e.g., both knights)
-        my_last_move.start_row == move.end_row and # check if the starting row of the previous move is the same as the ending row of the current move
-        my_last_move.start_col == move.end_col and # check if the starting column of the previous move is the same as the ending column of the current move
-        my_last_move.end_row   == move.start_row and # check if the ending row of the previous move is the same as the starting row of the current move
-        my_last_move.end_col   == move.start_col and # check if the ending column of the previous move is the same as the starting column of the current move
-        not my_last_move.is_captured and # check if the previous move was not a capture
-        not move.is_captured and # check if the current move is not a capture
-        not my_last_move.is_castling_move and # check if the previous move was not a castling move
-        not move.is_castling_move): # check if the current move is not a castling move
-        return True # if all the conditions are met, it is a ping pong bounce
-    return False # if any of the conditions are not met, it is not a ping pong bounce
 
 '''
 Helper function to make first recursive call to best move function
@@ -226,6 +203,14 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
         score = turn_multiplier * terminal_eval_score(game_state)  # Evaluate the board score for the current game state and return it
         TRANSPOSITION_TABLE[fen_key] = {'score': score, 'tt_depth': search_depth_left, 'flag': EXACT}  # store a leaf node's score as EXACT
         return score
+    
+    # Early draw detection: treat repetition/50-move/insufficient material as terminal draws
+    if (getattr(game_state, 'is_threefold_repetition', False) or 
+        getattr(game_state, 'is_fifty_move_draw', False) or
+        getattr(game_state, 'is_insufficient_material', False)):
+        score = turn_multiplier * STALEMATE_SCORE
+        TRANSPOSITION_TABLE[fen_key] = {'score': score, 'tt_depth': search_depth_left, 'flag': EXACT}
+        return score
 
     legal_moves = order_moves(legal_moves, depth_from_root) # order legal moves at the current depth for better pruning using captures, killer moves and history scores
     # When search_depth_left == 1 i.e., batched leaf evaluation (batching per node at depth-1, not all leaves of the whole tree)
@@ -244,6 +229,10 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
                 next_legal_moves = game_state.get_valid_moves()  # get the legal moves from the new position
                 if (len(next_legal_moves) == 0) and (game_state.is_checkmate or game_state.is_stalemate):  # If child is terminal (checkmate or stalemate) avoid NN call
                     move_scores_raw[j] = terminal_eval_score(game_state)  # directly evaluate the terminal state without a neural network call
+                elif (getattr(game_state, 'is_threefold_repetition', False) or
+                      getattr(game_state, 'is_fifty_move_draw', False) or
+                      getattr(game_state, 'is_insufficient_material', False)):
+                    move_scores_raw[j] = STALEMATE_SCORE
                 else:
                     # non-terminal: build the child encoding snapshot
                     new_enc = encoding.copy()  # create a copy of the parent encoding to apply changes to
@@ -259,9 +248,6 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
                     move_scores_raw[j] = WEIGHTS["dnn"] * raw
             for j, move in enumerate(moves_batch):
                 score = turn_multiplier * move_scores_raw[j]  # calculate the score for the current player's perspective
-                # Apply ping-pong penalty if the move bounces the same piece back to its previous square
-                if is_ping_pong_bounce(game_state, move):
-                    score -= PING_PONG_PENALTY
                 # negamax check
                 if score > max_score:  # If the score is greater than the current max score
                     max_score = score  # Update the maximum score
@@ -271,7 +257,7 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
                 if max_score > alpha:
                     alpha = max_score  # Update alpha to the maximum score found
                 if alpha >= beta:  # If alpha is greater than or equal to beta
-                    if not move.is_captured: # killer history updates on cutoff (non-captures only)
+                    if getattr(move, 'captured_piece', '--') == '--': # killer history updates on cutoff (non-captures only)
                         killers = KILLER_MOVES[depth_from_root] # retrieve killer moves for the current depth
                         if killers[0] != move.unique_id:
                             killers[1] = killers[0]
@@ -295,9 +281,6 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
             next_possible_moves = game_state.get_valid_moves()  # Get the valid moves for the next possible moves
             score = -negamax_alpha_beta_search(game_state, next_possible_moves, search_depth_left - 1, -beta, -alpha, -turn_multiplier, depth_from_root + 1, new_enc)  # Recursive call to find the best move for the opponent
             game_state.undo_move()  # Undo the player's move to evaluate the next one
-            # Apply ping-pong penalty at internal nodes too (score is already from current player's perspective)
-            if is_ping_pong_bounce(game_state, move):
-                score -= PING_PONG_PENALTY             
             # negamax check
             if score > max_score:  # If the score is greater than the current max score
                 max_score = score  # Update the maximum score
@@ -310,7 +293,7 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
             if max_score > alpha:
                 alpha = max_score  # Update alpha to the maximum score found
             if alpha >= beta:  # If alpha is greater than or equal to beta
-                if not move.is_captured: # killer history updates on cutoff (non-captures only)
+                if getattr(move, 'captured_piece', '--') == '--': # killer history updates on cutoff (non-captures only)
                     killers = KILLER_MOVES[depth_from_root] # retrieve killer moves for the current depth
                     if killers[0] != move.unique_id:
                         killers[1] = killers[0]

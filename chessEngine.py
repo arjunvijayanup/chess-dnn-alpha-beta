@@ -2,6 +2,8 @@
 Stores the GameState class, which is storing the current state of the chess game. Also,
 helps the engine to determine the legal moves for each piece and the current state of the game.
 """
+from collections import Counter  # for threefold repetition tracking
+
 class GameState():
 
     def __init__(self):
@@ -39,6 +41,12 @@ class GameState():
         self.castling_rights_current = CastleRights(True, True, True, True)
         self.castling_rights_log = [CastleRights(self.castling_rights_current.white_kingside, self.castling_rights_current.black_kingside,
                                                  self.castling_rights_current.white_queenside, self.castling_rights_current.black_queenside)] # copy castling rights from its original state and keep track of the changes
+        self.half_move_clock = 0 # half-move clock for 50-move rule
+        self.fullmove_number = 1 # increments after Black's move
+        self.position_counts = Counter()
+        self.position_stack = []
+        # Initialize repetition counter with starting position
+        self._bump_repetition_counter()
 
     """
     FEN to Board Encoding to compare with stockfish (we need to feed our position to stockfish in fen format)
@@ -77,9 +85,68 @@ class GameState():
         if self.en_passant_possible: # If en passant is possible
             en_passant_row, en_passant_file_index = self.en_passant_possible # Get the row and file of the en passant square
             en_passant_target_square = f"{chr(en_passant_file_index + ord('a'))}{8 - en_passant_row}" # Convert to algebraic notation (example:'e3')
-        half_move_clock = 0
-        fullmove_number = 1
+        half_move_clock = self.half_move_clock
+        fullmove_number = self.fullmove_number
         return f"{fen_board_layout} {active_color} {castling_rights_string} {en_passant_target_square} {half_move_clock} {fullmove_number}" # Return the complete FEN string
+
+    """
+    The functions below are designed to handle draw conditions.
+    """
+
+    def _repetition_key(self):
+        fen_string = self.to_fen() # # Generate a unique key for the current board position for repetition detection.
+        fen_parts = fen_string.split() # Split the FEN string into its constituent parts.
+        # Return the first four parts of the FEN string (board state, active color, castling rights and en passant target square) as the key.
+        # This is done to ignore the half-move and full-move clocks, which are not relevant for threefold repetition.
+        return " ".join(fen_parts[:4]) if len(fen_parts) >= 4 else fen_string
+
+    def _bump_repetition_counter(self):
+        position_key = self._repetition_key() # Increment the repetition counter for the current board position.
+        self.position_counts[position_key] = self.position_counts.get(position_key, 0) + 1 # Retrieve the current count for the position key, defaulting to 0 if not found, and adds 1.
+        self.position_stack.append(position_key) # Push the key onto a stack to keep track of the history of positions.
+
+    def _drop_repetition_counter(self):
+        # Decrement the repetition counter for the last recorded board position.
+        if self.position_stack: # Check if there are any positions to drop from the stack.
+            position_key = self.position_stack.pop() # Remove the most recent position key from the stack.
+            current_count = self.position_counts.get(position_key, 0) # Get the current count for that position key
+            if current_count <= 1: # If the count is 1 or less, remove the key from the dictionary entirely to save space
+                self.position_counts.pop(position_key, None)
+            else: # Otherwise simply decrements the counter
+                self.position_counts[position_key] = current_count - 1
+
+    """
+    Check if the current position has occurred at least three times.
+    Retrieve the count for the current position key, defaulting to 0 if not found.
+    Return True if the count is 3 or more, indicating a threefold repetition.
+    """
+    @property
+    def is_threefold_repetition(self):
+        return self.position_counts.get(self._repetition_key(), 0) >= 3
+
+    """
+    Check for a draw by the fifty-move rule.
+    The rule states that a draw can be claimed if 50 moves have passed without a pawn move 
+    or a capture.
+    This corresponds to 100 half-moves.
+    """
+    @property
+    def is_fifty_move_draw(self):
+        return self.half_move_clock >= 100
+
+    """
+    Check for a draw due to insufficient material to force a checkmate.
+    Create a list of all pieces on the board, excluding empty squares.
+    """
+    @property
+    def is_insufficient_material(self):
+        pieces_on_board = [self.board[row][col][1] for row in range(8) for col in range(8) if self.board[row][col] != "--"]
+        non_king_pieces = [p for p in pieces_on_board if p != 'K'] # Filter out the kings, as they are not relevant for determining insufficient material.
+        if not non_king_pieces: # If there are no pieces other than kings, it's a draw (King vs. King).
+            return True
+        if len(non_king_pieces) == 1 and non_king_pieces[0] in ('B', 'N'): # If there is only one piece besides the kings and it is a Bishop or a Knight, it's also a draw.
+            return True
+        return False # In all other cases, there is enough material to potentially force a checkmate
 
     '''
     Takes moves as a parameter and executes it.
@@ -87,6 +154,8 @@ class GameState():
     '''
     def make_move(self, move, promotion_choice='Q'):
         # Update the board and game state by making the given move
+        move.half_move_clock_before = self.half_move_clock # Store clocks to allow exact undo
+        move.fullmove_number_before = self.fullmove_number
         self.board[move.start_row][move.start_col] = "--"   # setting start location as blank after the move done
         self.board[move.end_row][move.end_col] = move.moved_piece  # Move the selected piece to the end square
         self.moves_log.append(move)   # Log the move (Used to undo later)
@@ -125,9 +194,20 @@ class GameState():
         self.update_castling_rights(move)
         self.castling_rights_log.append(CastleRights(self.castling_rights_current.white_kingside, self.castling_rights_current.black_kingside,
                                                      self.castling_rights_current.white_queenside, self.castling_rights_current.black_queenside)) # copy castling rights from its original state and keep track of the changes
+        # Update half-move clock (reset on pawn move or any capture)
+        if move.moved_piece[1] == 'p' or getattr(move, 'is_captured', False):
+            self.half_move_clock = 0
+        else:
+            self.half_move_clock += 1
+        # Update fullmove number after Black's move
+        if move.moved_piece[0] == 'b':
+            self.fullmove_number += 1
+        # Bump repetition counter for the new position
+        self._bump_repetition_counter()
 
     def undo_move(self):
         # Undo the last move made
+        self._drop_repetition_counter() # Drop repetition for current position before reverting
         if len(self.moves_log)!=0:    # making sure that move log is not empty
             move = self.moves_log.pop()   # remove last move log
             self.board[move.start_row][move.start_col] = move.moved_piece  # Resetting the moved piece to its original square
@@ -160,6 +240,11 @@ class GameState():
 
             self.is_checkmate = False # when we undo move, we are not in checkmate anymore
             self.is_stalemate = False # when we undo move, we are not in stalemate anymore
+            # Restore clocks exactly
+            if hasattr(move, 'half_move_clock_before'):
+                self.half_move_clock = move.half_move_clock_before
+            if hasattr(move, 'fullmove_number_before'):
+                self.fullmove_number = move.fullmove_number_before
 
     def update_castling_rights(self, move):
         # Update the castle rights given the move

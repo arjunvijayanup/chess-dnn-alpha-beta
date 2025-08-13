@@ -121,12 +121,17 @@ def main():
         for event in p.event.get():
             if event.type == p.QUIT: # Check if the user wants to quit
                 is_running = False # Set running to False to exit the loop
-            elif event.type == p.MOUSEBUTTONDOWN: # Check if the user clicked the mouse
-                if not is_game_over and not promotion_pending_move and human_turn and not AI_thinking: # If the game is not over, no promotion pending, process the mouse click
-                    click_position = p.mouse.get_pos() # Get the mouse (x,y) position
-                    clicked_col = click_position[0] // SQ_SIZE # Calculate the column based on mouse position
-                    clicked_row = click_position[1] // SQ_SIZE # Calculate the row based on mouse position
-                    # only allow starting a move from the current side to move
+            elif event.type == p.MOUSEBUTTONDOWN:  # mouse input
+                # Handle board clicks with LEFT button only
+                if event.button == 1 and not is_game_over and not promotion_pending_move and human_turn and not AI_thinking:
+                    x, y = p.mouse.get_pos()
+                    # Ignore clicks outside the 8x8 board (example: move log at right, footer at bottom)
+                    if x < 0 or x >= BOARD_WIDTH or y < 0 or y >= BOARD_HEIGHT:
+                        # Optional: clear any selection if user clicks off-board
+                        selected_square, click_history = (), []
+                        continue
+                    clicked_col = x // SQ_SIZE
+                    clicked_row = y // SQ_SIZE # only allow starting a move from the current side to move
                     if selected_square == ():
                         piece = game_state.board[clicked_row][clicked_col]
                         if piece != "--":
@@ -257,7 +262,13 @@ def main():
         if move_executed: # If a move has been made
             if should_animate: animate_move(game_state.moves_log[-1], screen, game_state.board, clock) # taking latest move and animating
             legal_moves = game_state.get_valid_moves() # Get the valid moves for the current game state
-            
+
+            if len(legal_moves) == 0 and not game_state.is_in_check:
+                game_state.is_stalemate = True # set stalemate flag
+            if game_state.is_threefold_repetition or game_state.is_fifty_move_draw or game_state.is_insufficient_material:
+                # We can re-use the stalemate flag for a generic draw state to trigger the endgame screen
+                game_state.is_stalemate = True # set stalemate flag
+
             # Setting check and checkmate flags for the last move in move log (for Move log panel Chess Notation)
             if game_state.moves_log: # If there are moves in the move log
                 last_move = game_state.moves_log[-1]
@@ -283,7 +294,13 @@ def main():
             is_game_over = True
             if game_state.is_stalemate:
                 print_text = 'Stalemate!'
-            else:
+                if game_state.is_threefold_repetition:
+                    print_text = 'Draw by Threefold Repetition!'
+                elif game_state.is_fifty_move_draw:
+                    print_text = 'Draw by Fifty-Move Rule!'
+                elif game_state.is_insufficient_material:
+                    print_text = 'Draw by Insufficient Material!'
+            elif game_state.is_checkmate:
                 print_text = 'Black wins by Checkmate!' if game_state.white_to_move else 'White wins by Checkmate!'
             draw_endgame_text(screen, print_text, endgame_text_font) # Draw the endgame text on the screen
         p.display.flip() # Update the display
