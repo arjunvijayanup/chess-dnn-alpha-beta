@@ -49,6 +49,10 @@ EXACT, LOWER, UPPER = 0, 1, 2 # transposition flags to classify the stored score
 KILLER_MOVES = defaultdict(lambda: [None, None]) # two killers per ply (auto-creates [None, None] for unseen ply), stores non-capture moves that caused a beta cutoff at a given depth
 HISTORY_MOVES = defaultdict(int) # MOVES: stores a score for each move, incremented when the move causes a cutoff
 
+# Ping-pong penalty and score thresholds for a "drawish" position
+PING_PONG_PENALTY = 0.02  # penalty to discourage back and forth loops(NN interval: [-1,1])
+DRAWISH_EPSILON   = 0.15  # only discourage ping-pong if position is roughly equal
+
 '''
 Vectorized DNN eval evaluation
 This uses a 782-vector encoding (768 piece planes + 14 aux features).
@@ -76,10 +80,8 @@ def terminal_eval_score(game_state):
             return -CHECKMATE_SCORE # black wins
         else: # If it's black's turn and the game is checkmate
             return CHECKMATE_SCORE # white wins
-            return -CHECKMATE_SCORE # bad for current side
     elif game_state.is_stalemate: # If the game is in stalemate
         return STALEMATE_SCORE
-        return STALEMATE_SCORE # score 0
     else:
         raise RuntimeError("terminal_eval_score called on non-terminal position")
 
@@ -141,6 +143,62 @@ def order_moves(legal_moves, depth_from_root):
     prioritized_moves = sorted(legal_moves, key=lambda m: move_scores.get(m.unique_id, 0), reverse=True)
     return prioritized_moves # Return the list of moves now sorted by priority
 
+"""
+This function checks if the game state is in an immediate two-fold repetition,
+following an ABAB pattern over the last four moves.
+It checks for two types of repetitive moves and applies a penalty only when the current
+position is considered a drawish spot.
+"""
+def ping_pong_penalty_needed(game_state, move, score, proposed_key=None):
+# Gate the penalty strictly to drawish spots: never discourage repetition when worse
+    if abs(score) > DRAWISH_EPSILON:
+        return False
+
+    # Check for an immediate two-fold position cycle (A>B>A) using the position history.
+    position_history = getattr(game_state, "position_stack", None)
+    # The cycle requires at least four positions in the history.
+    # Immediate bounce back to the position from two plies ago (AB) -> A
+    if position_history is not None and len(position_history) >= 2 and proposed_key is not None:
+        if proposed_key == position_history[-2]:
+            return True
+
+    # Check for a same-side, same-piece immediate bounce (A->B then B->A).
+    # This is a different type of repetition that is not position-based.
+    move_log = getattr(game_state, "moves_log", None)
+    # A bounce requires at least two moves by the same player.
+    if not move_log or len(move_log) < 2:
+        return False
+        
+    # Get the previous move made by the current player.
+    last_move_by_same_player = move_log[-2]
+
+    # Check if the same piece (color and type) is making the move.
+    try:
+        if last_move_by_same_player.moved_piece[0] != move.moved_piece[0]:
+            return False  # Colors don't match.
+        if last_move_by_same_player.moved_piece[1] != move.moved_piece[1]:
+            return False  # Piece types don't match.
+    except Exception:
+        return False  # Handle cases where piece data is missing.
+
+    # Check if the move is an exact reversal of the previous move.
+    if not (last_move_by_same_player.start_row == move.end_row and
+            last_move_by_same_player.start_col == move.end_col and
+            last_move_by_same_player.end_row == move.start_row and
+            last_move_by_same_player.end_col == move.start_col):
+        return False
+
+    # Ensure no captures, castling, or pawn promotions occurred on either move.
+    if getattr(last_move_by_same_player, 'is_captured', False) or getattr(move, 'is_captured', False):
+        return False
+    if getattr(last_move_by_same_player, 'is_castling_move', False) or getattr(move, 'is_castling_move', False):
+        return False
+    if getattr(last_move_by_same_player, 'is_pawn_promotion', False) or getattr(move, 'is_pawn_promotion', False):
+        return False
+
+    # If all checks pass, a ping-pong penalty is needed.
+    return True
+
 '''
 Helper function to make first recursive call to best move function
 '''
@@ -184,6 +242,8 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
     function_calls += 1  # Increment the function calls count
     fen_key = game_state.to_fen()  # for transposition table, creates a unique key for the board state
     alpha_orig = alpha  # transposition stores original alpha to classify the stored result
+    beta_orig = beta
+    penalized_any = False  # track if any child score at this node was ping-pong penalized
 
     # Check if the current position is in the transposition table
     entry = TRANSPOSITION_TABLE.get(fen_key)  # retrieves a stored entry in transposition table if it exists
@@ -221,12 +281,15 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
             cutoff = False  # reset per batch 
             moves_batch = legal_moves[i:i + MAX_LEAF_BATCH]  # take a batch of moves to evaluate
             encoded_boards_to_evaluate = []  # list to hold encoded boards for batch evaluation
+            proposed_keys = [None] * len(moves_batch)  # repetition keys after making each candidate move
             batch_index_map = []  # list to map evaluation results back to the original move index
             move_scores_raw = [None] * len(moves_batch)  # list to store the raw scores of each move in the batch
             for j, move in enumerate(moves_batch):  # j is batch move index
                 chessEncoding.annotate_move_for_encoding(move)  # minimal annotations for nn board
                 game_state.make_move(move)  # make the move on the actual game state
                 next_legal_moves = game_state.get_valid_moves()  # get the legal moves from the new position
+                if getattr(game_state, "position_stack", None): # record the repetition key for THIS candidate position (used to test ABAB continuation)
+                    proposed_keys[j] = game_state.position_stack[-1]
                 if (len(next_legal_moves) == 0) and (game_state.is_checkmate or game_state.is_stalemate):  # If child is terminal (checkmate or stalemate) avoid NN call
                     move_scores_raw[j] = terminal_eval_score(game_state)  # directly evaluate the terminal state without a neural network call
                 elif (getattr(game_state, 'is_threefold_repetition', False) or
@@ -248,11 +311,12 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
                     move_scores_raw[j] = WEIGHTS["dnn"] * raw
             for j, move in enumerate(moves_batch):
                 score = turn_multiplier * move_scores_raw[j]  # calculate the score for the current player's perspective
+                if ping_pong_penalty_needed(game_state, move, score, proposed_key=proposed_keys[j]): # cycle OR same-piece bounce check and only in drawish spots
+                    score -= PING_PONG_PENALTY
+                    penalized_any = True
                 # negamax check
                 if score > max_score:  # If the score is greater than the current max score
                     max_score = score  # Update the maximum score
-                elif score == max_score and search_depth_left == MAX_DEPTH:  # If the score is equal to the current max score (tie)
-                    pass
                 # pruning
                 if max_score > alpha:
                     alpha = max_score  # Update alpha to the maximum score found
@@ -304,10 +368,12 @@ def negamax_alpha_beta_search(game_state, legal_moves, search_depth_left, alpha,
     # classify transposition table flag based on window and then store
     if max_score <= alpha_orig:  # If the best score found is less than or equal to the original alpha, it means the search failed to raise alpha.
         flag = UPPER  # fail-low result, so the score is an upper bound on the true value (no move was found that could improve on the alpha score).
-    elif max_score >= beta:  # If the best score found is greater than or equal to beta, it means the search failed to fall below beta.
+    elif max_score >= beta_orig:  # If the best score found is greater than or equal to beta, it means the search failed to fall below beta.
         flag = LOWER  # fail-high result, so the score is a lower bound on the true value (a move is so good that the parent would have pruned this branch anyway).
     else:  # If the best score found is within the original alpha-beta window.
         flag = EXACT  # The score is considered an exact score because it's the true value for this position.
+    if penalized_any and flag == EXACT:
+        flag = LOWER  # avoid caching history-tainted EXACT scores
     TRANSPOSITION_TABLE[fen_key] = {'score': max_score, 'tt_depth': search_depth_left, 'flag': flag}  # store the final score with its flag
     return max_score  # Return the maximum score found
 
