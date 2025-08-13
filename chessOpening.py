@@ -33,7 +33,7 @@ class OpeningBook:
     """
     def __init__(
         self,
-        hf_name: str = "Lichess/chess-openings",                        # Hugging Face dataset name (default "Lichess/chess-openings")
+        hf_name: str = "Lichess/chess-openings",                        # Hugging Face dataset name (default "Lichess/chess-openings") - dataset from https://huggingface.co/datasets/Lichess/chess-openings
         split: str = "train",                                           # HF dataset split (default "train")
         cache_file: Optional[str] = "opening_moveCache.pkl.gz",         # cache storage (for subsequent run speedups)
         force_rebuild: bool = False,                                    # If True, ignore cache and rebuild from HF dataset.
