@@ -121,7 +121,7 @@ def run_ai_loop(input_queue, output_queue, depth=None):
     global eval_model, MAX_DEPTH, MODEL_INPUT, prediction_graph # declare globals so the model and buffers are accessible in other AI functions
     if depth is not None:
         MAX_DEPTH = int(depth)
-    print(f"[chessAI] Using MAX_DEPTH={MAX_DEPTH}", flush=True)
+    #print(f"[chessAI] Using MAX_DEPTH={MAX_DEPTH}", flush=True)
     if not os.path.exists(MODEL_PATH):
         print(f"[chessAI] Model file not found: '{MODEL_PATH}'.", flush=True)
     eval_model = tf.keras.models.load_model(MODEL_PATH, compile=False) # Load pre-trained Keras model from disk (compiled=False skips training setup)

@@ -153,6 +153,16 @@ class GameState():
     This will not work for castling, enpassant or pawn promotion.
     '''
     def make_move(self, move, promotion_choice='Q'):
+        try:
+            # Using the full legal move list to see if other same-type pieces can
+            # land on the same destination square.
+            legal_before = self.get_valid_moves()
+        except Exception:
+            legal_before = []
+        try:
+            move.disambig = compute_san_disambiguation(move, legal_before)
+        except Exception:
+            move.disambig = ""
         # Update the board and game state by making the given move
         move.half_move_clock_before = self.half_move_clock # Store clocks to allow exact undo
         move.fullmove_number_before = self.fullmove_number
@@ -174,19 +184,28 @@ class GameState():
         if move.is_en_passant:
             self.board[move.start_row][move.end_col] = "--"
         
+        if move.is_castling_move:
+            if move.end_col == 6:  # king-side O-O
+                r_sr, r_sc, r_er, r_ec = move.start_row, 7, move.start_row, 5 
+            else:        # queen-side O-O-O
+                r_sr, r_sc, r_er, r_ec = move.start_row, 0, move.start_row, 3
+            self.board[r_er][r_ec] = self.board[r_sr][r_sc] # moves rook after castling
+            self.board[r_sr][r_sc] = "--" # Erase the old rook"
+        
         # if pawn promotion changed piece
         if move.is_pawn_promotion:
             move.promotion_choice = promotion_choice # Storing promotion choice for chess notation
             self.board[move.end_row][move.end_col] = move.moved_piece[0] + promotion_choice
 
         # Castling move
-        if move.is_castling_move:
+        """if move.is_castling_move:
             if move.end_col - move.start_col == 2:    # Kingside castling
                 self.board[move.end_row][move.end_col - 1] = self.board[move.end_row][move.end_col + 1]   # moves rook after castling
                 self.board[move.end_row][move.end_col + 1] = '--' # Erase the old rook
             else:   # Queenside castling
                 self.board[move.end_row][move.end_col + 1] = self.board[move.end_row][move.end_col - 2]   # moves rook after castling
-                self.board[move.end_row][move.end_col - 2] = '--' # Erase the old rook
+                self.board[move.end_row][move.end_col - 2] = '--' # Erase the old rook"""
+        # Castling handling (rook shift is SILENT — no extra log entry)
 
         self.en_passant_log.append(self.en_passant_possible) # Keeping track of the en-passant square changes
 
@@ -204,6 +223,11 @@ class GameState():
             self.fullmove_number += 1
         # Bump repetition counter for the new position
         self._bump_repetition_counter()
+
+        # This computes whether the *opponent* is in check/mate (Additional check for castling moves)
+        _ = self.get_valid_moves()          # updates self.is_in_check / self.is_checkmate
+        move.is_in_check = self.is_in_check
+        move.is_checkmate = self.is_checkmate
 
     def undo_move(self):
         # Undo the last move made
@@ -231,12 +255,19 @@ class GameState():
             self.castling_rights_current =  self.castling_rights_log[-1] # Setting current castling rights to the last one in the list
             # Undo castle move
             if move.is_castling_move:
-                if move.end_col - move.start_col == 2:   # Kingside castling
+                if move.end_col == 6:  # king-side O-O
+                    r_sr, r_sc, r_er, r_ec = move.start_row, 7, move.start_row, 5
+                else:        # queen-side O-O-O
+                    r_sr, r_sc, r_er, r_ec = move.start_row, 0, move.start_row, 3 
+                self.board[r_sr][r_sc] = self.board[r_er][r_ec] # moves rook back to original position
+                self.board[r_er][r_ec] = "--" # Erase the earlier castled rook square
+                
+                """if move.end_col - move.start_col == 2:   # Kingside castling
                     self.board[move.end_row][move.end_col + 1] = self.board[move.end_row][move.end_col - 1]   # moves rook back to original position
                     self.board[move.end_row][move.end_col - 1] = '--' # Erase the earlier castled rook square
                 else:   # Queenside castling
                     self.board[move.end_row][move.end_col - 2] = self.board[move.end_row][move.end_col + 1]   # moves rook back to original position
-                    self.board[move.end_row][move.end_col + 1] = '--' # Erase the earlier castled rook square
+                    self.board[move.end_row][move.end_col + 1] = '--' # Erase the earlier castled rook square"""
 
             self.is_checkmate = False # when we undo move, we are not in checkmate anymore
             self.is_stalemate = False # when we undo move, we are not in stalemate anymore
@@ -247,16 +278,16 @@ class GameState():
                 self.fullmove_number = move.fullmove_number_before
 
     def update_castling_rights(self, move):
-        # Update the castle rights given the move
+        
         if move.captured_piece == "wR":
-            if move.end_col == 0:  # left rook
+            if (move.end_row, move.end_col) == (7, 0):  # a1 rook captured
                 self.castling_rights_current.white_queenside = False
-            elif move.end_col == 7:  # right rook
+            elif (move.end_row, move.end_col) == (7, 7):  # h1 rook captured
                 self.castling_rights_current.white_kingside = False
         elif move.captured_piece == "bR":
-            if move.end_col == 0:  # left rook
+            if (move.end_row, move.end_col) == (0, 0):  # a8 rook captured
                 self.castling_rights_current.black_queenside = False
-            elif move.end_col == 7:  # right rook
+            elif (move.end_row, move.end_col) == (0, 7):  # h8 rook captured
                 self.castling_rights_current.black_kingside = False
 
         if move.moved_piece == 'wK':
@@ -703,6 +734,7 @@ class Move():
         self.promotion_choice = None    # Pawn promotion choice
         self.is_in_check = False    # If the move results in check
         self.is_checkmate = False   # If the move results in checkmate
+        self.disambig = ""    # SAN format (e.g., "a" in "Rae8", "3" in "N3f5", or "a3" if both needed) disambiguation hint
 
 
     def __eq__(self, other):
@@ -745,6 +777,8 @@ class Move():
         else:
             # Other piece moves
             move_string = self.moved_piece[1] # Get the piece type
+            if getattr(self, "disambig", ""):
+                move_string += self.disambig  
             if self.is_captured:
                 move_string += 'x'
             move_string += end_square    #Return the move string in chess notation
@@ -757,4 +791,34 @@ class Move():
             move_string += '+'
         
         return move_string
+
+def compute_san_disambiguation(move, legal_moves):
+    """
+    Return minimal SAN disambiguation for `move` given `legal_moves`.
+    file (e.g., 'a'), rank (e.g., '3'), or file+rank (e.g., 'a3').
+    """
+    # Pawns never use disambiguation
+    if move.moved_piece[1] == 'p':
+        return ""
+    # Find other same type moves that also land on the same destination
+    clashes = [
+        m for m in legal_moves
+        if m is not move
+        and m.moved_piece == move.moved_piece
+        and m.end_row == move.end_row and m.end_col == move.end_col
+    ]
+    if not clashes:
+        return ""
+    same_file = any(m.start_col == move.start_col for m in clashes)
+    same_rank = any(m.start_row == move.start_row for m in clashes)
+    file_char = Move.colsToFiles[move.start_col]
+    rank_char = Move.rowsToRanks[move.start_row]
+    if same_file and same_rank:
+        return file_char + rank_char   # need both
+    elif same_file:
+        return rank_char               # file collides -> use rank
+    elif same_rank:
+        return file_char               # rank collides -> use file
+    else:
+        return file_char               # also either works (SAN prefers file)
         

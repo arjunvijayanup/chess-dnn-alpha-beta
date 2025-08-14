@@ -410,7 +410,7 @@ def main():
                     
                     if len(click_history) == 2: # Process move if two squares are selected in the human's turn (after 2nd click)
                         move = chessEngine.Move(click_history[0], click_history[1], game_state.board)
-                        print(move.get_chess_notation()) # Print the move in chess notation (for debugging purposes)
+                        #print(move.get_chess_notation()) # Print the move in chess notation (for debugging purposes)
                         move_found = False
                         for move_index in range(len(legal_moves)):
                             if move == legal_moves[move_index]:
@@ -504,9 +504,9 @@ def main():
                 print("AI finished thinking.") # Print AI finished thinking message
                 #if not return_queue.empty(): # If the return queue is not empty
                 pos_key_returned, AI_move, LAST_STATS = ai_output_queue.get() # Get the best move from the AI
-                # TEMPORARILY disabling fallback for testing purposes
-                # if AI_move is None: # If best move is none
-                    #AI_move = chessAI.random_AI_move(legal_moves) # Get a random move from the Random AI function
+                # Disable fallback for testing purposes only (UI)
+                if AI_move is None: # If best move is none
+                    AI_move = chessAI.random_AI_move(legal_moves) # Get a random move from the Random AI function
                 if AI_move is not None and pos_key_returned == len(game_state.moves_log):
                     game_state.make_move(AI_move) # Make the AI move in the game state
                     move_executed, should_animate = True, True # Set the flags to indicate a move has been made
