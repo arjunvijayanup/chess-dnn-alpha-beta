@@ -142,8 +142,13 @@ def run_ai_loop(input_queue, output_queue, depth=None):
     while True: # Main loop - keep processing AI move requests from the main process
         # Get the next request from the main process
         # pos_key -> move number at time of request (for stale-move detection)
-        pos_key, depth_to_use, game_state, legal_moves = input_queue.get()
-        MAX_DEPTH = int(depth_to_use)  # per-request override
+        ai_in_q = input_queue.get()
+        if isinstance(ai_in_q, (tuple, list)):
+            if len(ai_in_q) == 4:
+                pos_key, depth_to_use, game_state, legal_moves = ai_in_q
+                MAX_DEPTH = int(depth_to_use)  # per-request override
+            elif len(ai_in_q) == 3:
+                pos_key, game_state, legal_moves = ai_in_q
         best_move = get_best_move(game_state, legal_moves) # Use AI search to select the best move from the current position
         # Send the result back to the main process along with the position key
         # Also, returning stats to log for arena.py which logs Nodes per sec, Transition table etc

@@ -80,12 +80,6 @@ def get_castling_rights(game_state):
         bks = getattr(castling_rights, "black_kingside", False)
         bqs = getattr(castling_rights, "black_queenside", False)
         return bool(wks), bool(wqs), bool(bks), bool(bqs) # Return the rights as boolean values
-    # Fallback to checking for attributes directly on the game state object
-    wks = getattr(game_state, "white_kingside", False)
-    wqs = getattr(game_state, "white_queenside", False)
-    bks = getattr(game_state, "black_kingside", False)
-    bqs = getattr(game_state, "black_queenside", False)
-    return bool(wks), bool(wqs), bool(bks), bool(bqs)
 
 # En-passant
 def get_en_passant_file(game_state):
