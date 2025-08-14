@@ -2,6 +2,8 @@
 Stores the GameState class, which is storing the current state of the chess game. Also,
 helps the engine to determine the legal moves for each piece and the current state of the game.
 """
+from collections import Counter  # for threefold repetition tracking
+
 class GameState():
 
     def __init__(self):
@@ -39,50 +41,131 @@ class GameState():
         self.castling_rights_current = CastleRights(True, True, True, True)
         self.castling_rights_log = [CastleRights(self.castling_rights_current.white_kingside, self.castling_rights_current.black_kingside,
                                                  self.castling_rights_current.white_queenside, self.castling_rights_current.black_queenside)] # copy castling rights from its original state and keep track of the changes
+        self.half_move_clock = 0 # half-move clock for 50-move rule
+        self.fullmove_number = 1 # increments after Black's move
+        self.position_counts = Counter()
+        self.position_stack = []
+        # Initialize repetition counter with starting position
+        self._bump_repetition_counter()
 
     """
     FEN to Board Encoding to compare with stockfish (we need to feed our position to stockfish in fen format)
     """
-
     def to_fen(self):
-        rows = [] # List to store each row of the FEN string
-        for row in self.board: # Loop through each row of the board
-            empty = 0 # Counter for empty squares in the row
-            fen_row = "" # String to store the FEN representation of the row
-            for sq in row: # Loop through each square in the row
-                if sq == "--": # If the square is empty
-                    empty += 1 # Increment the empty square counter
+        fen_rows = [] # List to store each row of the FEN string
+        for board_row in self.board: # Loop through each row of the board
+            empty_squares = 0 # Counter for empty squares in the row
+            fen_row_string = "" # String to store the FEN representation of the row
+            for square in board_row: # Loop through each square in the row
+                if square == "--": # If the square is empty
+                    empty_squares += 1 # Increment the empty square counter
                 else: # If the square is not empty
-                    if empty: # If there are empty squares before this piece
-                        fen_row += str(empty) # Add the count of empty squares to the FEN string
-                        empty = 0 # Reset the empty square counter
-                    letter = sq[1] # Get the piece letter (e.g., 'p', 'N', 'B', etc.)
-                    fen_row += letter.upper() if sq[0] == 'w' else letter.lower() # Add the piece letter to the FEN string
-            if empty: # If there are empty squares at the end of the row
-                fen_row += str(empty) # Add the count of empty squares to the FEN string
-            rows.append(fen_row) #  Add the FEN representation of the row to the list
-        layout = "/".join(rows) # Join the rows to form the FEN layout
-        stm = 'w' if self.white_to_move else 'b' # 'w' for white's turn, 'b' for black
-        cr = "" # Castling rights string
-        crc = self.castling_rights_current # Current castling rights
-        if crc.white_kingside:   cr += 'K' # If white can castle kingside
-        if crc.white_queenside:  cr += 'Q' # If white can castle queenside
-        if crc.black_kingside:   cr += 'k' # If black can castle kingside
-        if crc.black_queenside:  cr += 'q' # If black can castle queenside
-        if cr == "": cr = '-' # If no castling rights, set to '-'
+                    if empty_squares: # If there are empty squares before this piece
+                        fen_row_string += str(empty_squares) # Add the count of empty squares to the FEN string
+                        empty_squares = 0 # Reset the empty square counter
+                    piece_type = square[1] # Get the piece letter (e.g., 'p', 'N', 'B', etc.)
+                    piece_representation = piece_type.upper() if square[0] == 'w' else piece_type.lower() # Add the piece letter to the FEN string
+                    fen_row_string += piece_representation
+            if empty_squares: # If there are empty squares at the end of the row
+                fen_row_string += str(empty_squares) # Add the count of empty squares to the FEN string
+            fen_rows.append(fen_row_string) #  Add the FEN representation of the row to the list
+        fen_board_layout = "/".join(fen_rows) # Join the rows to form the FEN layout
+        active_color = 'w' if self.white_to_move else 'b' # 'w' for white's turn, 'b' for black
+        
+        castling_rights_string = "" # Castling rights string
+        castling_rights_current = self.castling_rights_current # Current castling rights
+        if castling_rights_current.white_kingside:   castling_rights_string += 'K' # If white can castle kingside
+        if castling_rights_current.white_queenside:  castling_rights_string += 'Q' # If white can castle queenside
+        if castling_rights_current.black_kingside:   castling_rights_string += 'k' # If black can castle kingside
+        if castling_rights_current.black_queenside:  castling_rights_string += 'q' # If black can castle queenside        
+        
+        if not castling_rights_string:
+            castling_rights_string = '-' # If no castling rights, set to '-'
+        en_passant_target_square = '-' # If no en passant possible
         if self.en_passant_possible: # If en passant is possible
-            r, f = self.en_passant_possible # Get the row and file of the en passant square
-            ep = f"{chr(f + ord('a'))}{8 - r}" # Convert to algebraic notation (e.g., 'e3')
-        else: # If no en passant possible
-            ep = '-' # Set to '-'
-        return f"{layout} {stm} {cr} {ep} 0 1" # Return the complete FEN string
+            en_passant_row, en_passant_file_index = self.en_passant_possible # Get the row and file of the en passant square
+            en_passant_target_square = f"{chr(en_passant_file_index + ord('a'))}{8 - en_passant_row}" # Convert to algebraic notation (example:'e3')
+        half_move_clock = self.half_move_clock
+        fullmove_number = self.fullmove_number
+        return f"{fen_board_layout} {active_color} {castling_rights_string} {en_passant_target_square} {half_move_clock} {fullmove_number}" # Return the complete FEN string
+
+    """
+    The functions below are designed to handle draw conditions.
+    """
+
+    def _repetition_key(self):
+        fen_string = self.to_fen() # # Generate a unique key for the current board position for repetition detection.
+        fen_parts = fen_string.split() # Split the FEN string into its constituent parts.
+        # Return the first four parts of the FEN string (board state, active color, castling rights and en passant target square) as the key.
+        # This is done to ignore the half-move and full-move clocks, which are not relevant for threefold repetition.
+        return " ".join(fen_parts[:4]) if len(fen_parts) >= 4 else fen_string
+
+    def _bump_repetition_counter(self):
+        position_key = self._repetition_key() # Increment the repetition counter for the current board position.
+        self.position_counts[position_key] = self.position_counts.get(position_key, 0) + 1 # Retrieve the current count for the position key, defaulting to 0 if not found, and adds 1.
+        self.position_stack.append(position_key) # Push the key onto a stack to keep track of the history of positions.
+
+    def _drop_repetition_counter(self):
+        # Decrement the repetition counter for the last recorded board position.
+        if self.position_stack: # Check if there are any positions to drop from the stack.
+            position_key = self.position_stack.pop() # Remove the most recent position key from the stack.
+            current_count = self.position_counts.get(position_key, 0) # Get the current count for that position key
+            if current_count <= 1: # If the count is 1 or less, remove the key from the dictionary entirely to save space
+                self.position_counts.pop(position_key, None)
+            else: # Otherwise simply decrements the counter
+                self.position_counts[position_key] = current_count - 1
+
+    """
+    Check if the current position has occurred at least three times.
+    Retrieve the count for the current position key, defaulting to 0 if not found.
+    Return True if the count is 3 or more, indicating a threefold repetition.
+    """
+    @property
+    def is_threefold_repetition(self):
+        return self.position_counts.get(self._repetition_key(), 0) >= 3
+
+    """
+    Check for a draw by the fifty-move rule.
+    The rule states that a draw can be claimed if 50 moves have passed without a pawn move 
+    or a capture.
+    This corresponds to 100 half-moves.
+    """
+    @property
+    def is_fifty_move_draw(self):
+        return self.half_move_clock >= 100
+
+    """
+    Check for a draw due to insufficient material to force a checkmate.
+    Create a list of all pieces on the board, excluding empty squares.
+    """
+    @property
+    def is_insufficient_material(self):
+        pieces_on_board = [self.board[row][col][1] for row in range(8) for col in range(8) if self.board[row][col] != "--"]
+        non_king_pieces = [p for p in pieces_on_board if p != 'K'] # Filter out the kings, as they are not relevant for determining insufficient material.
+        if not non_king_pieces: # If there are no pieces other than kings, it's a draw (King vs. King).
+            return True
+        if len(non_king_pieces) == 1 and non_king_pieces[0] in ('B', 'N'): # If there is only one piece besides the kings and it is a Bishop or a Knight, it's also a draw.
+            return True
+        return False # In all other cases, there is enough material to potentially force a checkmate
 
     '''
     Takes moves as a parameter and executes it.
     This will not work for castling, enpassant or pawn promotion.
     '''
     def make_move(self, move, promotion_choice='Q'):
+        try:
+            # Using the full legal move list to see if other same-type pieces can
+            # land on the same destination square.
+            legal_before = self.get_valid_moves()
+        except Exception:
+            legal_before = []
+        try:
+            move.disambig = compute_san_disambiguation(move, legal_before)
+        except Exception:
+            move.disambig = ""
         # Update the board and game state by making the given move
+        move.half_move_clock_before = self.half_move_clock # Store clocks to allow exact undo
+        move.fullmove_number_before = self.fullmove_number
         self.board[move.start_row][move.start_col] = "--"   # setting start location as blank after the move done
         self.board[move.end_row][move.end_col] = move.moved_piece  # Move the selected piece to the end square
         self.moves_log.append(move)   # Log the move (Used to undo later)
@@ -101,19 +184,28 @@ class GameState():
         if move.is_en_passant:
             self.board[move.start_row][move.end_col] = "--"
         
+        if move.is_castling_move:
+            if move.end_col == 6:  # king-side O-O
+                r_sr, r_sc, r_er, r_ec = move.start_row, 7, move.start_row, 5 
+            else:        # queen-side O-O-O
+                r_sr, r_sc, r_er, r_ec = move.start_row, 0, move.start_row, 3
+            self.board[r_er][r_ec] = self.board[r_sr][r_sc] # moves rook after castling
+            self.board[r_sr][r_sc] = "--" # Erase the old rook"
+        
         # if pawn promotion changed piece
         if move.is_pawn_promotion:
             move.promotion_choice = promotion_choice # Storing promotion choice for chess notation
             self.board[move.end_row][move.end_col] = move.moved_piece[0] + promotion_choice
 
         # Castling move
-        if move.is_castling_move:
+        """if move.is_castling_move:
             if move.end_col - move.start_col == 2:    # Kingside castling
                 self.board[move.end_row][move.end_col - 1] = self.board[move.end_row][move.end_col + 1]   # moves rook after castling
                 self.board[move.end_row][move.end_col + 1] = '--' # Erase the old rook
             else:   # Queenside castling
                 self.board[move.end_row][move.end_col + 1] = self.board[move.end_row][move.end_col - 2]   # moves rook after castling
-                self.board[move.end_row][move.end_col - 2] = '--' # Erase the old rook
+                self.board[move.end_row][move.end_col - 2] = '--' # Erase the old rook"""
+        # Castling handling (rook shift is SILENT — no extra log entry)
 
         self.en_passant_log.append(self.en_passant_possible) # Keeping track of the en-passant square changes
 
@@ -121,9 +213,25 @@ class GameState():
         self.update_castling_rights(move)
         self.castling_rights_log.append(CastleRights(self.castling_rights_current.white_kingside, self.castling_rights_current.black_kingside,
                                                      self.castling_rights_current.white_queenside, self.castling_rights_current.black_queenside)) # copy castling rights from its original state and keep track of the changes
+        # Update half-move clock (reset on pawn move or any capture)
+        if move.moved_piece[1] == 'p' or getattr(move, 'is_captured', False):
+            self.half_move_clock = 0
+        else:
+            self.half_move_clock += 1
+        # Update fullmove number after Black's move
+        if move.moved_piece[0] == 'b':
+            self.fullmove_number += 1
+        # Bump repetition counter for the new position
+        self._bump_repetition_counter()
+
+        # This computes whether the *opponent* is in check/mate (Additional check for castling moves)
+        _ = self.get_valid_moves()          # updates self.is_in_check / self.is_checkmate
+        move.is_in_check = self.is_in_check
+        move.is_checkmate = self.is_checkmate
 
     def undo_move(self):
         # Undo the last move made
+        self._drop_repetition_counter() # Drop repetition for current position before reverting
         if len(self.moves_log)!=0:    # making sure that move log is not empty
             move = self.moves_log.pop()   # remove last move log
             self.board[move.start_row][move.start_col] = move.moved_piece  # Resetting the moved piece to its original square
@@ -147,27 +255,39 @@ class GameState():
             self.castling_rights_current =  self.castling_rights_log[-1] # Setting current castling rights to the last one in the list
             # Undo castle move
             if move.is_castling_move:
-                if move.end_col - move.start_col == 2:   # Kingside castling
+                if move.end_col == 6:  # king-side O-O
+                    r_sr, r_sc, r_er, r_ec = move.start_row, 7, move.start_row, 5
+                else:        # queen-side O-O-O
+                    r_sr, r_sc, r_er, r_ec = move.start_row, 0, move.start_row, 3 
+                self.board[r_sr][r_sc] = self.board[r_er][r_ec] # moves rook back to original position
+                self.board[r_er][r_ec] = "--" # Erase the earlier castled rook square
+                
+                """if move.end_col - move.start_col == 2:   # Kingside castling
                     self.board[move.end_row][move.end_col + 1] = self.board[move.end_row][move.end_col - 1]   # moves rook back to original position
                     self.board[move.end_row][move.end_col - 1] = '--' # Erase the earlier castled rook square
                 else:   # Queenside castling
                     self.board[move.end_row][move.end_col - 2] = self.board[move.end_row][move.end_col + 1]   # moves rook back to original position
-                    self.board[move.end_row][move.end_col + 1] = '--' # Erase the earlier castled rook square
+                    self.board[move.end_row][move.end_col + 1] = '--' # Erase the earlier castled rook square"""
 
             self.is_checkmate = False # when we undo move, we are not in checkmate anymore
             self.is_stalemate = False # when we undo move, we are not in stalemate anymore
+            # Restore clocks exactly
+            if hasattr(move, 'half_move_clock_before'):
+                self.half_move_clock = move.half_move_clock_before
+            if hasattr(move, 'fullmove_number_before'):
+                self.fullmove_number = move.fullmove_number_before
 
     def update_castling_rights(self, move):
-        # Update the castle rights given the move
+        
         if move.captured_piece == "wR":
-            if move.end_col == 0:  # left rook
+            if (move.end_row, move.end_col) == (7, 0):  # a1 rook captured
                 self.castling_rights_current.white_queenside = False
-            elif move.end_col == 7:  # right rook
+            elif (move.end_row, move.end_col) == (7, 7):  # h1 rook captured
                 self.castling_rights_current.white_kingside = False
         elif move.captured_piece == "bR":
-            if move.end_col == 0:  # left rook
+            if (move.end_row, move.end_col) == (0, 0):  # a8 rook captured
                 self.castling_rights_current.black_queenside = False
-            elif move.end_col == 7:  # right rook
+            elif (move.end_row, move.end_col) == (0, 7):  # h8 rook captured
                 self.castling_rights_current.black_kingside = False
 
         if move.moved_piece == 'wK':
@@ -614,6 +734,7 @@ class Move():
         self.promotion_choice = None    # Pawn promotion choice
         self.is_in_check = False    # If the move results in check
         self.is_checkmate = False   # If the move results in checkmate
+        self.disambig = ""    # SAN format (e.g., "a" in "Rae8", "3" in "N3f5", or "a3" if both needed) disambiguation hint
 
 
     def __eq__(self, other):
@@ -656,6 +777,8 @@ class Move():
         else:
             # Other piece moves
             move_string = self.moved_piece[1] # Get the piece type
+            if getattr(self, "disambig", ""):
+                move_string += self.disambig  
             if self.is_captured:
                 move_string += 'x'
             move_string += end_square    #Return the move string in chess notation
@@ -668,4 +791,34 @@ class Move():
             move_string += '+'
         
         return move_string
+
+def compute_san_disambiguation(move, legal_moves):
+    """
+    Return minimal SAN disambiguation for `move` given `legal_moves`.
+    file (e.g., 'a'), rank (e.g., '3'), or file+rank (e.g., 'a3').
+    """
+    # Pawns never use disambiguation
+    if move.moved_piece[1] == 'p':
+        return ""
+    # Find other same type moves that also land on the same destination
+    clashes = [
+        m for m in legal_moves
+        if m is not move
+        and m.moved_piece == move.moved_piece
+        and m.end_row == move.end_row and m.end_col == move.end_col
+    ]
+    if not clashes:
+        return ""
+    same_file = any(m.start_col == move.start_col for m in clashes)
+    same_rank = any(m.start_row == move.start_row for m in clashes)
+    file_char = Move.colsToFiles[move.start_col]
+    rank_char = Move.rowsToRanks[move.start_row]
+    if same_file and same_rank:
+        return file_char + rank_char   # need both
+    elif same_file:
+        return rank_char               # file collides -> use rank
+    elif same_rank:
+        return file_char               # rank collides -> use file
+    else:
+        return file_char               # also either works (SAN prefers file)
         

@@ -1,3 +1,5 @@
 .DS_Store
 __pycache__
 chessAIengine.code-workspace
+chess_env
+*.pkl.gz
