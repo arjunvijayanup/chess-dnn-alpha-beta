@@ -15,7 +15,7 @@ DIMENSION = 8
 SQ_SIZE = BOARD_HEIGHT // DIMENSION
 MAX_FPS = 20
 IMAGES = {}
-STOCKFISH_ENGINE_DEPTH = 3 # if used for comparison with Stockfish
+STOCKFISH_ENGINE_DEPTH = 3  # (legacy fallback, per-side ply controls below)
 FOOTER_HEIGHT = 20
 WINDOW_HEIGHT = BOARD_HEIGHT + FOOTER_HEIGHT
 SCROLL_SPEED = 20
@@ -35,10 +35,24 @@ selection_made = False
 selected_white = "Human" # initial dropdown default
 selected_black = "AI"  # initial dropdown default (matches previous setup)
 
+# Per-side ply options
+# AI ply (custom engine)
+AI_PLY_OPTIONS = [2, 3, 4]      # extend here, e.g. [2,3,4,5,6]
+DEFAULT_AI_PLY = 4
+white_ai_engine_ply = DEFAULT_AI_PLY
+black_ai_engine_ply = DEFAULT_AI_PLY
+# Stockfish ply
+SF_PLY_OPTIONS = [2, 3, 4]     # extend here if you like
+DEFAULT_SF_PLY = 2
+white_sf_ply = DEFAULT_SF_PLY
+black_sf_ply = DEFAULT_SF_PLY
+
 AI_process = None
 ai_input_queue = None
 ai_output_queue = None
-stockfish_player = None
+# separate Stockfish instances per side so each can have its own ply
+stockfish_player_white = None
+stockfish_player_black = None
 
 def apply_selection_to_flags(white_role, black_role):
     global human_white_player, human_black_player, stockfish_white_player, stockfish_black_player
@@ -148,20 +162,78 @@ class Button:
         surf.blit(t, (self.rect.centerx - t.get_width()//2, self.rect.centery - t.get_height()//2))
         p.draw.rect(surf, p.Color("lightsteelblue"), self.rect, 2, border_radius=8)
 
-def draw_start_popup(screen, title_font, font, white_dd, black_dd, start_btn):
+# Helper so subordinate controls clear the menu height
+def below_menu_y(dd, extra=28):
+    """Return a y position that sits safely below the dropdown's open menu."""
+    return dd.rect.y + dd.rect.height + dd.item_height * len(dd.options) + extra
+
+# Draw_start_popup renders per-side ply fields
+def draw_start_popup(screen, title_font, font,
+                     white_dd, black_dd, start_btn,
+                     white_ai_ply_dd=None, show_white_ai_ply=False,
+                     white_sf_ply_dd=None, show_white_sf_ply=False,
+                     black_ai_ply_dd=None, show_black_ai_ply=False,
+                     black_sf_ply_dd=None, show_black_sf_ply=False):
     overlay = p.Surface(screen.get_size(), p.SRCALPHA)
     overlay.fill((0, 0, 0, 180))
     screen.blit(overlay, (0, 0))
-    card_w, card_h = 440, 340
-    card_rect = p.Rect((screen.get_width() - card_w)//2, (screen.get_height() - card_h)//2, card_w, card_h)
+    # Compute card origin from dropdown placement so top spacing stays identical
+    card_w = 480
+    _LEFT_MARGIN = 40   # must match main()
+    _TOP_OFFSET  = 80
+    card_x = white_dd.rect.x - _LEFT_MARGIN
+    card_y = white_dd.rect.y - _TOP_OFFSET
+
+    # 1) Draw subordinate ply fields *first* so they sit under menus
+    # -- but only so we can compute the needed card size. We'll draw them again later.
+    # We'll use this lowest point to resize the card dynamically.
+    lowest = card_y + 300  # fallback baseline
+    def consider(dd, show):
+        nonlocal lowest
+        if show and dd is not None:
+            bottom = dd.rect.y + dd.rect.height + dd.item_height * len(dd.options)
+            lowest = max(lowest, bottom)
+    consider(white_ai_ply_dd, show_white_ai_ply)
+    consider(white_sf_ply_dd, show_white_sf_ply)
+    consider(black_ai_ply_dd, show_black_ai_ply)
+    consider(black_sf_ply_dd, show_black_sf_ply)
+
+    # keep original gap above button (24px) and center horizontally using card_x/card_w
+    start_btn.rect.centerx = card_x + card_w // 2
+    start_btn.rect.y = int(lowest + 24)
+
+    # Shrink the card to fit content — removes space *below* the button without
+    # changing the spacing above it.
+    BOTTOM_PADDING = 24
+    card_h = (start_btn.rect.y + start_btn.rect.height + BOTTOM_PADDING) - card_y
+    # vertically center the entire popup (card + controls) in the window
+    desired_card_y = (screen.get_height() - card_h) // 2
+    delta_y = desired_card_y - card_y
+    if delta_y != 0:
+        white_dd.rect.y += delta_y
+        black_dd.rect.y += delta_y
+        if white_ai_ply_dd is not None:  white_ai_ply_dd.rect.y += delta_y
+        if white_sf_ply_dd is not None:  white_sf_ply_dd.rect.y += delta_y
+        if black_ai_ply_dd is not None:  black_ai_ply_dd.rect.y += delta_y
+        if black_sf_ply_dd is not None:  black_sf_ply_dd.rect.y += delta_y
+        start_btn.rect.y += delta_y
+        card_y = desired_card_y
+
+    card_rect = p.Rect(card_x, card_y, card_w, card_h)
     p.draw.rect(screen, p.Color("gray15"), card_rect, border_radius=12)
     p.draw.rect(screen, p.Color("gray60"), card_rect, 1, border_radius=12)
     title = title_font.render("Choose Players", True, p.Color("white"))
     screen.blit(title, (card_rect.centerx - title.get_width()//2, card_rect.y + 16))
-    white_dd.draw(screen)
-    black_dd.draw(screen)
-    start_btn.draw(screen)
 
+    # Now draw controls on top of the resized card
+    if show_white_ai_ply and white_ai_ply_dd is not None: white_ai_ply_dd.draw(screen)
+    if show_white_sf_ply and white_sf_ply_dd is not None: white_sf_ply_dd.draw(screen)
+    if show_black_ai_ply and black_ai_ply_dd is not None: black_ai_ply_dd.draw(screen)
+    if show_black_sf_ply and black_sf_ply_dd is not None: black_sf_ply_dd.draw(screen)
+    white_dd.draw(screen);  black_dd.draw(screen)
+    if white_dd.open: white_dd.draw(screen)
+    if black_dd.open: black_dd.draw(screen)
+    start_btn.draw(screen)
     
 """
 Initializing global dict of images. Called once in the main
@@ -199,39 +271,87 @@ def main():
 
     # Start-of-game popup for selecting players
     global selection_made, selected_white, selected_black
-    global AI_process, ai_input_queue, ai_output_queue, stockfish_player
+    global AI_process, ai_input_queue, ai_output_queue, stockfish_player_white, stockfish_player_black
+    global white_ai_engine_ply, black_ai_engine_ply, white_sf_ply, black_sf_ply
 
     ui_font = p.font.SysFont("Arial", 18, False, False)
     title_font = p.font.SysFont("Arial", 26, True, False)
 
-    card_w, card_h = 440, 340
+    card_w, card_h = 480, 540
     card_x = (screen.get_width() - card_w)//2
     card_y = (screen.get_height() - card_h)//2
 
-    white_dd = Dropdown((card_x + 40,  card_y + 80, 160, 36), ui_font, "Player 1 (White)", ["Human", "AI", "Stockfish"], initial=selected_white)
-    black_dd = Dropdown((card_x + 240, card_y + 80, 160, 36), ui_font, "Player 2 (Black)", ["Human", "AI", "Stockfish"], initial=selected_black)
-    start_btn = Button((card_x + (card_w - 160)//2, card_y + 240, 160, 44), ui_font, "Start Game")
+    white_dd = Dropdown((card_x + 40,  card_y + 80, 180, 36), ui_font, "Player 1 (White)", ["Human", "AI", "Stockfish"], initial=selected_white)
+    # ply dropdowns sit below the full open-menu height of their parent dropdown
+    white_ai_ply_dd = Dropdown((white_dd.rect.x, below_menu_y(white_dd), 180, 36),
+                                 ui_font, "AI depth (White)", [str(v) for v in AI_PLY_OPTIONS], initial=str(DEFAULT_AI_PLY))
+    white_sf_ply_dd = Dropdown((white_dd.rect.x, below_menu_y(white_dd), 180, 36),
+                                 ui_font, "Stockfish depth (White)", [str(v) for v in SF_PLY_OPTIONS], initial=str(DEFAULT_SF_PLY))
+
+    black_dd = Dropdown((card_x + 260, card_y + 80, 180, 36), ui_font, "Player 2 (Black)", ["Human", "AI", "Stockfish"], initial=selected_black)
+    black_ai_ply_dd = Dropdown((black_dd.rect.x, below_menu_y(black_dd), 180, 36),
+                                 ui_font, "AI depth (Black)", [str(v) for v in AI_PLY_OPTIONS], initial=str(DEFAULT_AI_PLY))
+    black_sf_ply_dd = Dropdown((black_dd.rect.x, below_menu_y(black_dd), 180, 36),
+                                 ui_font, "Stockfish depth (Black)", [str(v) for v in SF_PLY_OPTIONS], initial=str(DEFAULT_SF_PLY))
+
+    start_btn = Button((card_x + (card_w - 160)//2, card_y + 320, 160, 44), ui_font, "Start Game")
 
     while not selection_made:
         clock.tick(30)
+        # Determine per-side visibility each frame
+        show_white_ai_ply  = (white_dd.value == "AI")
+        show_white_sf_ply  = (white_dd.value == "Stockfish")
+        show_black_ai_ply  = (black_dd.value == "AI")
+        show_black_sf_ply  = (black_dd.value == "Stockfish")
+
         for event in p.event.get():
             if event.type == p.QUIT:
                 return
             white_dd.handle_event(event)
             black_dd.handle_event(event)
+            # only handle events for visible ply dropdowns
+            if show_white_ai_ply:  white_ai_ply_dd.handle_event(event)
+            if show_white_sf_ply:  white_sf_ply_dd.handle_event(event)
+            if show_black_ai_ply:  black_ai_ply_dd.handle_event(event)
+            if show_black_sf_ply:  black_sf_ply_dd.handle_event(event)
+
             if start_btn.handle_event(event):
                 # if a dropdown is open, close it and ignore this click (prevents overlap issues)
-                if white_dd.open or black_dd.open:
+                if (white_dd.open or black_dd.open or
+                   (show_white_ai_ply and white_ai_ply_dd.open) or
+                   (show_white_sf_ply and white_sf_ply_dd.open) or
+                   (show_black_ai_ply and black_ai_ply_dd.open) or
+                   (show_black_sf_ply and black_sf_ply_dd.open)):
                     white_dd.open = False
                     black_dd.open = False
+                    if show_white_ai_ply: white_ai_ply_dd.open = False
+                    if show_white_sf_ply: white_sf_ply_dd.open = False
+                    if show_black_ai_ply: black_ai_ply_dd.open = False
+                    if show_black_sf_ply: black_sf_ply_dd.open = False
                     continue
                 selected_white = white_dd.value
                 selected_black = black_dd.value
                 ai_white, ai_black = apply_selection_to_flags(selected_white, selected_black)
                 set_game_caption()
-                if (stockfish_white_player or stockfish_black_player) and stockfish_player is None:
-                    stockfish_player = StockfishPlayer(base_dir, STOCKFISH_ENGINE_DEPTH)
-                    print("Stockfish engine initialized once after selection.")
+
+                # capture selected ply values per side
+                if show_white_ai_ply:
+                    white_ai_engine_ply = int(white_ai_ply_dd.value)
+                if show_black_ai_ply:
+                    black_ai_engine_ply = int(black_ai_ply_dd.value)
+                if show_white_sf_ply:
+                    white_sf_ply = int(white_sf_ply_dd.value)
+                if show_black_sf_ply:
+                    black_sf_ply = int(black_sf_ply_dd.value)
+
+                # create per-side Stockfish engines (only for sides that use Stockfish)
+                if stockfish_white_player and stockfish_player_white is None:
+                    stockfish_player_white = StockfishPlayer(base_dir, white_sf_ply)
+                    print(f"Stockfish (white) initialized with ply={white_sf_ply}.")
+                if stockfish_black_player and stockfish_player_black is None:
+                    stockfish_player_black = StockfishPlayer(base_dir, black_sf_ply)
+                    print(f"Stockfish (black) initialized with ply={black_sf_ply}.")
+
                 if (ai_white or ai_black) and AI_process is None:
                     ai_input_queue = Queue()
                     ai_output_queue = Queue()
@@ -241,7 +361,11 @@ def main():
                 selection_made = True
 
         draw_board(screen)
-        draw_start_popup(screen, title_font, ui_font, white_dd, black_dd, start_btn)
+        draw_start_popup(screen, title_font, ui_font, white_dd, black_dd, start_btn,
+                         white_ai_ply_dd=white_ai_ply_dd, show_white_ai_ply=show_white_ai_ply,
+                         white_sf_ply_dd=white_sf_ply_dd, show_white_sf_ply=show_white_sf_ply,
+                         black_ai_ply_dd=black_ai_ply_dd, show_black_ai_ply=show_black_ai_ply,
+                         black_sf_ply_dd=black_sf_ply_dd, show_black_sf_ply=show_black_sf_ply)
         p.display.flip()
 
     is_running = True # Variable to control the main loop
@@ -373,7 +497,9 @@ def main():
                 print("AI is thinking...") # Print AI is thinking message
                 footer_text = "AI is thinking..."
                 pos_key = len(game_state.moves_log)
-                ai_input_queue.put((pos_key, game_state, legal_moves))
+                # choose per-side depth and send it with the request
+                depth_to_use = white_ai_engine_ply if game_state.white_to_move else black_ai_engine_ply
+                ai_input_queue.put((pos_key, depth_to_use, game_state, legal_moves))
             if ai_output_queue is not None and not ai_output_queue.empty():
                 print("AI finished thinking.") # Print AI finished thinking message
                 #if not return_queue.empty(): # If the return queue is not empty
@@ -393,8 +519,11 @@ def main():
         elif stockfish_turn and not is_game_over and not promotion_pending_move and not human_turn:
             print("Stockfish is thinking...")
             footer_text = "Stockfish is thinking..."
-            # Call the get_best_move method from the StockfishPlayer class
-            sf_move = stockfish_player.get_best_move(game_state)
+            # choose the correct per-side Stockfish instance
+            if game_state.white_to_move:
+                sf_move = stockfish_player_white.get_best_move(game_state)
+            else:
+                sf_move = stockfish_player_black.get_best_move(game_state)
             print("Stockfish finished thinking.")
             game_state.make_move(sf_move)
             move_executed, should_animate = True, True
@@ -449,8 +578,10 @@ def main():
     if AI_process and AI_process.is_alive():
         AI_process.terminate()
         AI_process.join()
-    if stockfish_player is not None:
-        stockfish_player.quit_engine()
+    if stockfish_player_white is not None:
+        stockfish_player_white.quit_engine()
+    if stockfish_player_black is not None:
+        stockfish_player_black.quit_engine()
 
 """
 Graphics in the current game state
