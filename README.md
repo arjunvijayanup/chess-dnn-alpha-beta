@@ -367,7 +367,7 @@ Detailed results and additional analyses are available in `arena_results_*.csv` 
 
 What we tried, measured, and rolled back—brief reasons why.
 
-- **Move caching (per-position):** Reduced repeated compute, but **startup/memory overhead** dominated in Python; net slowdown.
+- **Move caching per-position (pre-computed; not TT):** Reduced repeated compute, but **startup/memory overhead** dominated in Python; net slowdown.
 - **Null-move pruning:** Fewer recursive calls, yet **interpreter + function-call overhead** in Python outweighed gains as pruning effectiveness didn’t reduce overall runtime.
 - **Quiescence search:** Conceptually sound (extend captures/tactics to reduce horizon effects), but in our pipeline **overhead > benefit**; NN leaf evaluation + move ordering was sufficient.
 - **Extra hand-crafted terms (mobility, king safety) mixed into NN output:** Led to **double-counting** and unstable scales; simpler **NN-only score** proved more consistent.
