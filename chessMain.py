@@ -37,13 +37,13 @@ selected_black = "AI"  # initial dropdown default (matches previous setup)
 
 # Per-side ply options
 # AI ply (custom engine)
-AI_PLY_OPTIONS = [2, 3, 4]      # extend here, e.g. [2,3,4,5,6]
-DEFAULT_AI_PLY = 4
+AI_PLY_OPTIONS = [2, 3, 4] # extend here for more depths, e.g. [2,3,4,5,6]
+DEFAULT_AI_PLY = 3
 white_ai_engine_ply = DEFAULT_AI_PLY
 black_ai_engine_ply = DEFAULT_AI_PLY
 # Stockfish ply
-SF_PLY_OPTIONS = [2, 3, 4]     # extend here if you like
-DEFAULT_SF_PLY = 2
+SF_PLY_OPTIONS = [2, 3, 4]  # extend here for more depths, e.g. [2,3,4,5,6]
+DEFAULT_SF_PLY = 3
 white_sf_ply = DEFAULT_SF_PLY
 black_sf_ply = DEFAULT_SF_PLY
 
