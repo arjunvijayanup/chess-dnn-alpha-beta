@@ -111,7 +111,7 @@ project-ai-chess-engine/
 
 ```bash
 python -m venv chess_env
-source chess_env\Scripts\activate
+chess_env\Scripts\activate.bat    # For powershell -> chess_env\Scripts\activate.ps1
 pip install --upgrade pip
 pip install pygame python-chess numpy pandas tensorflow==2.19.0 tqdm matplotlib datasets
 ```
