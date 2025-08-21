@@ -59,7 +59,6 @@ Overall, the project demonstrates the integration of search, machine learning, a
     - [Stockfish integration](#stockfish-integration)
   - [Network Architecture & Training](#network-architecture--training)
   - [Prediction Speedups](#prediction-speedups)
-  - [Feature Matrix (Quick Read)](#feature-matrix-quick-read)
 - [Benchmarking Against Stockfish](#benchmarking-against-stockfish)
   - [Observations](#observations)
 - [Advantages & Limitations](#advantages--limitations)
@@ -83,7 +82,8 @@ Implementing a full-model DNN in Python introduced its own efficiency challenges
 - **Neural evaluation** in TensorFlow/Keras using a **782‑dimensional** position encoding.
 - **Incremental feature updates**: reuse parent features and update only what changed after a move.
 - **Batch inference** with a cached prediction graph for minimal overhead inside the search loop.
-- **Move ordering**: Transposition table (TT) move first, then captures, killer moves, and history‑boosted quiets.
+- **Transposition table (TT)**: per-position cache to prevent redundant evaluation of positions and aid pruning.
+- **Move ordering**: promotion move first, then captures, killer moves, and history‑boosted quiets.
 - **Draw detection** implemented in the engine: threefold repetition, fifty‑move rule, insufficient material.
 - **Pygame UI** to play Human/AI/Stockfish; **Stockfish** wired via `python-chess`.
 
@@ -180,66 +180,87 @@ the training environment.</em>
 
 ### How the Engine Works
 
-#### Game state & move generation
-
-Defined in **[`chessEngine.py`](./chessEngine.py)**:
+#### 1) Game state & legal move generation — **[`chessEngine.py`](./chessEngine.py)**
 
 - `GameState` stores the board (8×8, two‑char piece codes like `wQ`, `bN`), side‑to‑move, castling rights, en‑passant, half‑move counter, and move log.
-- Legal move generation per piece (`get_pawn_moves`, `get_rook_moves`, `get_knight_moves`, `get_bishop_moves`, `get_queen_moves`, `get_king_moves`) and castling helpers.
-- **Draw conditions**: threefold repetition (via a repetition counter), fifty‑move rule, and insufficient material checks.
-- Utility methods include FEN conversion (`to_fen`) for interoperability.
+- **100% legal move generation** with per-piece helpers (`get_pawn_moves`, `get_rook_moves`, `get_knight_moves`, `get_bishop_moves`, `get_queen_moves`, `get_king_moves`) plus castling, en-passant and promotions.
+- **Draw detection**: threefold repetition (via a repetition counter), fifty‑move rule, and insufficient material checks.
+- **FEN I/O** utilities (`to_fen`, `from_fen`) for interoperability with external engines and tooling.
 
 <a id="search-negamax-ab-pruning"></a>
-#### Search (negamax + $\alpha\beta$ pruning)
+#### 2) Search (negamax + $\alpha\beta$ pruning) — **[`chessAI.py`](./chessAI.py)**
 
-Implemented in **[`chessAI.py`](./chessAI.py)**:
+- **Core**: depth-limited negamax with $\alpha\beta$ pruning (`negamax_alpha_beta_search(...)`,`get_best_move(...)`).
+- **Transposition table (TT)**: a Python dict keyed by FEN with flags `EXACT`, `LOWER`, `UPPER` to bound or commit scores.
+- **Move ordering**: see 5; ordering is applied before recursion each ply.
 
-- Core search: `negamax_alpha_beta_search(...)` and `get_best_move(...)`.
+#### 3) Repetition & “Ping-Pong” handling — **[`chessAI.py`](./chessAI.py)**
 
-- **Batched leaf evaluation (minibatch)**: At the frontier (`search_depth_left == 1`), we collect child positions, apply incremental encodings, and evaluate them in one NN call. a minibatch = 16 balances pruning and throughput—larger batches hurt move ordering, while size 1 underutilizes the NN.
+-  **Early draw detection**: Treat threefold repetition, 50-move rule, and insufficient material as terminal draws (searched no further).
+-  **Ping-pong penalty**: When the position is drawish (|score| ≤ $\epsilon$), penalize immediate ABAB repetitions that don’t change material/rights (no capture/castle/promo). A small `PING_PONG_PENALTY` is applied only at the frontier and never cached as an EXACT TT score.
 
-- **Transposition table**: a Python dict keyed by FEN with flags `EXACT`, `LOWER`, `UPPER` to bound or commit scores; probes/hits/stores tracked in `SearchStats`.
+#### 4) Evaluation — **[`chessEncoding.py`](./chessEncoding.py)** + TF Model (`lichess_eval_model.keras`)
 
-- **Repetition & “Ping-Pong” handling:**
-  - **Early draw detection:** Treat **threefold repetition**, **50-move rule**, and **insufficient material** as terminal draws early.
-  - **Ping-pong penalty:** Only for roughly draw-ish spots (**`|score| ≤ DRAWISH_EPSILON`**), penalize immediate **ABAB** position bounces (via `position_stack`) or **same-piece** back-and-forth (A->B then B->A with no capture/castling/promotion). Apply **`score -= PING_PONG_PENALTY`** at the frontier; if any penalty occurs at a node, avoid caching as `EXACT` (store as `LOWER`).
-    
-- `SearchStats` class collects: `nodes`, `tt_probes`, `tt_hits`, `tt_stores`, `beta_cutoffs`, `first_move_cutoffs`, and killer/history usage counters.
+-  **Feature vector (782-D)**: 768 piece-plane encodings + 14 auxiliary features (side-to-move, castling rights, ep file, half-move clock, etc.).
+-  **Network output**: white-centric score in [−1, 1] (blend-ready with other terms if needed).
+-  **Model lifecycle**: the AI process loads the Keras model once (path set by `MODEL_PATH`). The first call compiles a `tf.function` prediction graph; later calls reuse it (lower overhead than model.predict in this setup).
+-  **Terminal scoring**: checkmate ≫ draw ≫ worst evaluation; stalemate anchored at 0 to avoid horizon artifacts.
 
-#### Evaluation (782‑dim features)
+#### 5) Move ordering heuristics — **[`chessAI.py`](./chessAI.py)**
 
-- **[`chessEncoding.py`](./chessEncoding.py)** defines `INPUT_DIM = 782` (768 piece planes + 14 auxiliary features such as side‑to‑move, castling rights, en‑passant file, half‑move clock).
-- **`run_ai_loop()`** in [`chessAI.py`](./chessAI.py) forwards batched encodings to TensorFlow; the **first call** creates a cached prediction graph; later calls reuse it.
-- The Keras model path is referenced in code as `MODEL_PATH` (default points to `lichess_eval_model.keras`).
+-  **Priority**: Promotion > Capture > Killer > Quiet (history-ordered).
+-  **Killer moves**: two per depth; updated on β-cutoff.
+-  **History heuristic**: quiet-move history increments with a depth-squared term on β-cutoff; used as a tiebreaker within quiets.
+-  This ordering increases early β-cutoffs and improves TT usefulness.
 
-#### Incremental updates & batching
+#### 6) Incremental encodings & mini-batching — **[`chessAI.py`](./chessAI.py)** + **[`chessEncoding.py`](./chessEncoding.py)**
 
-- Instead of recomputing the full vector, child positions reuse the parent vector and toggle only changed indices (move, capture, castling, promotion, en‑passant, etc.).
-- Leaf positions are accumulated and **evaluated in batches** (`MAX_LEAF_BATCH`) to amortize framework overhead.
+-  **Incremental updates**: rather than recomputing the full 782-D vector, child positions **toggle only the changed indices** (move, capture, castling, ep, promotion).
+-  **Frontier minibatching**: at the leaf frontier (`search_depth_left = 1`), **siblings are encoded together** and sent to the NN in a single batch (default batch ≈ 16) to amortize framework overhead without harming ordering.
 
-#### Move ordering heuristics
+#### 7) Opening book — **[`chessOpening.py`](./chessOpening.py)**
 
-- **Ordered by Score (Descending): Pawn Promotion -> Capture -> Killer Move -> `HISTORY[move_id]` (for quiet moves).**
-- History is awarded when a non-capture causes a $\beta$-cutoff at remaining depth `d` via `HISTORY[move_id] += d*d`. History accumulates within the same root search and resets each root so that captures don’t receive history.
-- This increases $\beta$-cutoff and reduces nodes searched.
-
-#### Opening book
-
-- `OpeningBook` class from [`chessOpening.py`](./chessOpening.py) builds a simple opening book from the **[Lichess openings dataset](https://huggingface.co/datasets/Lichess/chess-openings)** (via `datasets.load_dataset`).
-- A compressed pickle cache (e.g., `opening_moveCache.pkl.gz`) is created for faster subsequent runs.
-- The AI imports and samples from this book in early plies when available.
+-  **Data**: curated**[Lichess openings dataset](https://huggingface.co/datasets/Lichess/chess-openings)**.
+-  **Usage**: temperature-sampled choices with a ply cap (≤20) to add variety while limiting early compute.
+-  **Caching**: on first use, a pickled prefix map ( (e.g., `opening_moveCache.pkl.gz`) is created; subsequent runs read the cache for instant lookup.
 
 | ![](assets/Indian_defense.png) | ![](assets/queens_gambit.png) | ![](assets/Zukertort_Opening.png) |
 |:--:|:--:|:--:|
 | *Indian Defense* | *Queens Gambit* | *Zukertort Opening* |
 
-#### Stockfish integration
+#### 8) Stockfish integration —  **[`stockfishHandler.py`](./stockfishHandler.py)**
 
-- Launches Stockfish with OS‑specific defaults **from the `stockfish/` folder**:
-  - Windows: `stockfish/stockfish-windows-x86-64-avx2.exe`
-  - macOS (Apple Silicon): `stockfish/stockfish-macos-m1-apple-silicon`
-- If the exact file is not executable, it falls back to `shutil.which("stockfish")`.
-- Moves are converted between `python-chess` and the engine’s internal `Move` format.
+-  **Handler**: `StockfishPlayer` encapsulates UCI I/O and converts between our `GameState` **(via FEN)** and `python-chess`.
+-  **Binaries**: chooses an OS-specific default from the `stockfish/` folder; falls back to `shutil.which("stockfish")` if not executable.
+-  **UI wiring**: the UI can run **separate instances per side** (e.g., human vs Stockfish, AI vs Stockfish) and currently exposes **fixed depth**; time controls and options (hash/threads/skill) are easy extensions.
+
+#### 9) Multiprocessing — **[`chessMain.py`](./chessMain.py)** + **[`chessAI.py`](./chessAI.py)**
+
+-  The AI runs in a **separate process**; the UI enqueues requests and receives replies, keeping the Pygame loop responsive and **warming** the TF graph only once.
+
+#### 10) UI/UX (Pygame) —  **[`chessMain.py`](./chessMain.py)**
+
+-  Initializes Pygame, window and configuration.
+-  Includes start menu to pick White/Black controllers (Human / our AI / Stockfish) and depths.
+-  Calls our AI when it’s that side’s turn; launches Stockfish instances on demand.
+-  Handles mouse and keys (Q/R/B/N promote, Z undo, R reset).
+-  Orchestrates turns: sends/receives AI/Stockfish moves, show “thinking,” drop stale replies.
+-  Updates GameState, log moves, draw and animate board, highlights and footer.
+-  Detects checkmate/stalemate/draw and enable restart.
+-  Cleanly shuts down AI/Stockfish on reset/exit.
+
+###  Score Table
+
+| Type                    | Name                  | Value               | 
+|-------------------------|-----------------------|---------------------|
+| Evaluation (terminal)   | Checkmate score       | ±1000               | 
+| Evaluation (terminal)   | Stalemate score       | 0                   |
+| Move ordering           | Promotion bonus       | +200                |
+| Move ordering           | Capture bonus         | +100                |
+| Move ordering           | Killer move bonus     | +50                 |
+| Move ordering           | History score         | $depth^2$ (additive)|
+| Draw handling           | Ping-pong penalty     | −0.02               |
+| Draw handling           | Drawish threshold ($\epsilon$)   | 0.15     |                                              
 
 ---
 
@@ -249,12 +270,12 @@ Implemented in **[`chessAI.py`](./chessAI.py)**:
 
 | Section | Details |
 |---|---|
-| **Task/target** | Regression to scaled centipawns in **[−1, 1]** |
+| **Task/target** | Regression to normalized centipawn score (white-perspective) |
 | **Model (DNN)** | `Dense(512, relu)` → `Dropout(0.2)` → `Dense(256, relu)` → `Dropout(0.2)` → `Dense(128, relu)` → `Dropout(0.2)` → `Dense(64, relu)` → `Dropout(0.2)` → `Dense(1, tanh)` |
 | **Compile** | `loss="mse"`, `metrics=["mae"]` |
 | **Optimizer** | Adam (`lr = 1e-4`) |
 | **Data** | Streamed from [Lichess position evaluations](https://huggingface.co/datasets/Lichess/chess-position-evaluations) (384M rows); fixed validation set **N = 100k** |
-| **Label scaling** | Clip cp to **±1000** → divide by **1000** → map to **[−1, 1]**; mates mapped to **±1** |
+| **Label scaling** | clip to ±1000; scale y= cp /1000 so **y∈[−1,1]); mates → ±1** |
 | **Schedule** | **Epochs:** 20 <br> **Steps/Epoch:** 2000 <br> **Batch Size:** 1024 <br> **Callbacks:** ReduceLROnPlateau, EarlyStopping, ModelCheckpoint |
 | **Compute & launch (AWS SageMaker)** | **Instance:** NVIDIA T4 (16 GB) <br> **Launch notebook:** [`launch_train_sagemaker.ipynb`](dnn_train/launch_train_sagemaker.ipynb) <br> **Total positions seen:** `20 × 2000 × 1024 = 40,960,000` ≈ **40.9M** <br> **Training time:** ~12 hours |
 
@@ -286,23 +307,6 @@ Implemented in **[`chessAI.py`](./chessAI.py)**:
   preds = prediction_graph(batch_np_float32)  # used instead of model.predict(...)
   ```
 ___
-
-### Feature Matrix (Quick Read)
-
-| Area | What we support | Notes |
-|---|---|---|
-| **Legality** | 100% legal move generation | Includes castling, en passant, promotion. |
-| **Search** | Negamax + α–β pruning | - Depth override per request (`MAX_DEPTH`) <br> - Stats tracked in `SearchStats`. |
-| **Batched eval** | Minibatched leaf evaluations | `MAX_LEAF_BATCH = 16` (frontier batching to amortize NN cost without hurting ordering). |
-| **Caching** | Transposition table | - Keyed by FEN position <br> - Stores `{score, tt_depth, flag∈{EXACT, LOWER, UPPER}}` <br> - Depth-aware lookups tighten the ${\alpha}-{\beta}$ window or return exact scores. |
-| **Move ordering** | Promotions, captures, killer moves, history |  Additive score: `+200` promo, `+100` capture, `+50` killer, `+HISTORY[move_id]` (quiet only) <br> - History update on β-cutoff: `HISTORY += d²`. |
-| **Repetition handling** | Threefold, 50-move, insufficient material | - Early draw detection (treat as terminal) <br> - Ping-pong penalty: apply only when **`abs(score) ≤ DRAWISH_EPSILON = 0.15`** ; subtract **`PING_PONG_PENALTY = 0.02`** for immediate ABAB or same-piece back-and-forth (no capture/castle/promo). |
-| **Evaluation** | Neural MLP on 782-D features | - White-centric output in **[−1, 1]** <br> - `WEIGHTS = {"dnn": 1.0}`; extensible (e.g., mobility, king safety). |
-| **Terminal scoring** | Checkmate / stalemate anchors | `CHECKMATE_SCORE = 1000`, `STALEMATE_SCORE = 0`. |
-| **Opening book** | Temperature-sampled, ≤20 plies | - Reduces early compute <br> - Adds randomnness (`temperature=0.75`, `max_book_plies=20`). |
-| **UI/UX** | Pygame board & controls | - Dropdown player/depth, animations <br> - Human / AI / Stockfish combinations. |
-| **Multiprocessing** | Separate AI process | - Loads model once <br> - Queues requests/replies to avoid per-move overhead. |
-| **Model infrastructure** | TensorFlow `tf.function` prediction graph | - First call warms up/compiles <br> - Subsequent calls reuse cached graph (faster than `.predict()` in our setup). |
 
 ---
 
@@ -378,11 +382,13 @@ What we tried, measured, and rolled back—brief reasons why.
 
 ## Future Scope
 
-- **NNUE accumulator + INT8 head**: Skip the first layer calculation in neural network (Weights W1 * input x) and update it on each move; run the remaining layers in **INT8** big CPU speedups via SIMD (TFLite/ONNX), no retrain needed.
+- **NNUE accumulator + INT8 head:** Cache the first-layer output in NN i.e. $(W_1 x + b_1)$ and update it per move (skip recomputing $W_1 x$\); run the remaining layers in **INT8** with SIMD (TFLite/ONNX) for big CPU speedups. Post-training quantization — **no retrain needed**.
 - **Iterative deepening with time controls**: Practical play (per-move/total clocks); industry norm.
-- **Reinforcement learning**: useful but heavier infrastructure; add on top of supervised model.
+- **Reinforcement learning**: Useful but heavier infrastructure; add on top of supervised model.
 - **Cython/C++ hotspots**: Port performance critical functions such as move-generation, make/undo, Transposition table probes, etc for further throughput.
 - **Explore MCTS hybrid**: Prototype a policy/value Monte Carlo Tree Search (MCTS) variant (less classical than α–β) to compare strength vs compute trade-offs.
+- **Zobrist hashing for TT (replace FEN):** 64-bit incremental key updated on make/undo; avoids FEN build/parse, cuts allocations, speeds probes—industry standard for fast position keys with near-zero duplicates.
+- **Endgame module**: Add basic endgame heuristics for perfect small endings, faster mate/draw recognition and stronger practical play.
 
 ---
 
