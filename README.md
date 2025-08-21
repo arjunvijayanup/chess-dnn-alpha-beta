@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/python--chess-Latest-blue" />
   <img src="https://img.shields.io/badge/numpy-Latest-blue" />
   <img src="https://img.shields.io/badge/pandas-Latest-blue" />
-  <img src="https://img.shields.io/badge/tensorflow-Latest-orange?logo=tensorflow" />
+  <img src="https://img.shields.io/badge/tensorflow-2.19.0-orange?logo=tensorflow" />
   <img src="https://img.shields.io/badge/tqdm-Latest-lightgrey" />
   <img src="https://img.shields.io/badge/matplotlib-Latest-blue" />
   <img src="https://img.shields.io/badge/datasets-HF-blue" />
