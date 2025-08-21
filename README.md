@@ -73,7 +73,7 @@ Overall, the project demonstrates the integration of search, machine learning, a
 
 The design of this engine is guided by two complementary inspirations in modern computer chess. The α–β search framework is motivated by Stockfish, which demonstrates the effectiveness of deep, optimized search with strong pruning techniques. For position evaluation, our approach draws inspiration from AlphaZero, which employs a full neural network model (in their case, a convolutional architecture). While we initially considered CNN-based evaluation, this was set aside due to practical constraints, and we instead adopted a fully connected DNN.
 
-Implementing a full-model DNN in Python introduced its own efficiency challenges, particularly with inference speed during deep search. As a result, part of our motivation also shifted toward engineering improvements that reduce per-move computation time. These trade-offs, along with the limitations of our chosen architecture, are discussed further in the Ablations section.
+Implementing a full-model DNN in Python introduced its own efficiency challenges, particularly with inference speed during deep search. As a result, part of our motivation also shifted toward engineering improvements that reduce per-move computation time. The limitations of the initially considered CNN approach are discussed further in the Ablations section.
 
 ## Highlights
 
