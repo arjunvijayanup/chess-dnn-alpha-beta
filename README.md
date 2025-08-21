@@ -108,7 +108,7 @@ project-ai-chess-engine/
 ├── stockfish/                          # Stockfish executables (For Windows and Mac OS) 
 │   └── stockfish-macos-m1-apple-silicon
 │   └── stockfish-windows-x86-64-avx2.exe
-├── arena.ipynb                         # Example notebook for running/evaluating matches
+├── arena.ipynb                         # Game simulation notebook for running/evaluating matches
 ├── lichess_eval_model.keras            # Trained DNN Model (Keras) evaluator
 ├── assets/                             # README media assets 
 ├── Poster.pdf                          # Poster
