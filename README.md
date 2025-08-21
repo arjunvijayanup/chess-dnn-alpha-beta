@@ -43,8 +43,10 @@ Overall, the project demonstrates the integration of search, machine learning, a
 - [Highlights](#highlights)
 - [Repository Layout](#repository-layout)
 - [Setup](#setup)
-  - [Install](#install)
+  - [Windows](#windows)
+  - [macOS](#macos)
   - [Run the UI](#run-the-ui)
+  - [Quick Start Checklist](#quick-start-checklist)
 - [Methodology](#methodology)
   - [Overview](#overview)  
   - [How the Engine Works](#how-the-engine-works)
@@ -59,6 +61,7 @@ Overall, the project demonstrates the integration of search, machine learning, a
   - [Prediction Speedups](#prediction-speedups)
   - [Feature Matrix (Quick Read)](#feature-matrix-quick-read)
 - [Benchmarking Against Stockfish](#benchmarking-against-stockfish)
+  - [Observations](#observations)
 - [Advantages & Limitations](#advantages--limitations)
 - [Ablations, Lessons Learned](#ablations-lessons-learned)
 - [Troubleshooting](#troubleshooting)
@@ -81,7 +84,7 @@ Implementing a full-model DNN in Python introduced its own efficiency challenges
 - **Neural evaluation** in TensorFlow/Keras using a **782‑dimensional** position encoding.
 - **Incremental feature updates**: reuse parent features and update only what changed after a move.
 - **Batch inference** with a cached prediction graph for minimal overhead inside the search loop.
-- **Move ordering**: TT move first, then captures, killer moves, and history‑boosted quiets.
+- **Move ordering**: Transposition table (TT) move first, then captures, killer moves, and history‑boosted quiets.
 - **Draw detection** implemented in the engine: threefold repetition, fifty‑move rule, insufficient material.
 - **Pygame UI** to play Human/AI/Stockfish; **Stockfish** wired via `python-chess`.
 
@@ -154,9 +157,15 @@ In the Pygame start overlay, choose **White** and **Black** controllers (Human /
 |||
 | *Our AI (white) vs Stockfish (black)* | *Human (white) vs Human (black)* |
 
+
+### Quick Start Checklist
+- **Stockfish binary**: Ensure the executable exists in `stockfish/` with the expected filename and execute permission.
+- **TensorFlow compatibility:** Developed and tested on **TensorFlow 2.19.0**. Other versions may work, but are **not guaranteed**. Check your local version with:
+  `python -c "import tensorflow as tf; print(tf.__version__)"`
+- **Per-move time:** Hardware-dependent (CPU/GPU, drivers). If you experience lag, lower the search depth for smoother play.
+- **First-run startup delay:** On first launch, the opening book is streamed and cached (from Lichess), which can add a short delay. Subsequent runs use the local cache and start quickly.
+
 ---
-
-
 
 ## Methodology
 
@@ -237,7 +246,7 @@ Implemented in **[`chessAI.py`](./chessAI.py)**:
 
 ###  Network Architecture & Training
 
-[`dnn_train/ai_train.py`](dnn_train/ai_train.py) (TensorFlow/Keras):
+[`ai_train.py`](dnn_train/ai_train.py) (TensorFlow/Keras):
 
 | Section | Details |
 |---|---|
@@ -248,7 +257,7 @@ Implemented in **[`chessAI.py`](./chessAI.py)**:
 | **Data** | Streamed from [Lichess position evaluations](https://huggingface.co/datasets/Lichess/chess-position-evaluations) (384M rows); fixed validation set **N = 100k** |
 | **Label scaling** | Clip cp to **±1000** → divide by **1000** → map to **[−1, 1]**; mates mapped to **±1** |
 | **Schedule** | **Epochs:** 20 <br> **Steps/Epoch:** 2000 <br> **Batch Size:** 1024 <br> **Callbacks:** ReduceLROnPlateau, EarlyStopping, ModelCheckpoint |
-| **Compute & launch (AWS SageMaker)** | **Instance:** NVIDIA T4 (16 GB) <br> **Launch notebook:** [`dnn_train/launch_train_sagemaker.ipynb`](dnn_train/launch_train_sagemaker.ipynb) <br> **Total positions seen:** `20 × 2000 × 1024 = 40,960,000` ≈ **40.9M** <br> **Training time:** ~12 hours |
+| **Compute & launch (AWS SageMaker)** | **Instance:** NVIDIA T4 (16 GB) <br> **Launch notebook:** [`launch_train_sagemaker.ipynb`](dnn_train/launch_train_sagemaker.ipynb) <br> **Total positions seen:** `20 × 2000 × 1024 = 40,960,000` ≈ **40.9M** <br> **Training time:** ~12 hours |
 
 - **Observation:** Training loss improves faster than validation (expected due to noisy/streamed positions). Slow MSE convergence for validation data.
 - **Export**: Save the best model as `.keras` and place it at repo root (e.g., `lichess_eval_model.keras`).
@@ -294,19 +303,11 @@ ___
 | **Opening book** | Temperature-sampled, ≤20 plies | - Reduces early compute <br> - Adds randomnness (`temperature=0.75`, `max_book_plies=20`). |
 | **UI/UX** | Pygame board & controls | - Dropdown player/depth, animations <br> - Human / AI / Stockfish combinations. |
 | **Multiprocessing** | Separate AI process | - Loads model once <br> - Queues requests/replies to avoid per-move overhead. |
-| **Model infra** | TensorFlow `tf.function` prediction graph | - First call warms up/compiles <br> - Subsequent calls reuse cached graph (faster than `.predict()` in our setup). |
+| **Model infrastructure** | TensorFlow `tf.function` prediction graph | - First call warms up/compiles <br> - Subsequent calls reuse cached graph (faster than `.predict()` in our setup). |
 
 ---
 
 ## Benchmarking Against Stockfish
-
-`arena_results_*` CSV files in `stats/` capture tournament and performance stats, including columns such as:
-
-- `ai_nps`, `ai_time_ms`, `tt_probes`, `tt_hits`, `tt_hit_rate`, `tt_stores`,
-- `beta_cutoffs`, `first_move_cutoffs`, `avg_branch`, `killer_uses`, `history_uses`,
-- `Score`, `Elo_diff`, `ai_est_elo`, `sf_est_elo`.
-
-Use [`plots.ipynb`](stats/plots.ipynb) to visualize training/evaluation curves or arena outcomes.
 
 <p align="center">
   <img src="assets/stockfishvsAI.png" alt="stockfishvsAI" width="800"><br>
@@ -319,14 +320,36 @@ Use [`plots.ipynb`](stats/plots.ipynb) to visualize training/evaluation curves o
 NPS/TT/β-cutoffs/killer/history are pooled averages. Positive ΔElo favors our AI. TT = transposition table.</em>
 </p>
 
+Detailed results and additional analyses are available in `arena_results_*.csv` files in the [`stats/`](stats/) directory. **Also in the CSVs (not shown in the summary table):**
+  - `tt_probes`, `tt_hit_rate`, `tt_stores`: Detailed TT activity
+  - `first_move_cutoffs`: $\beta$-cutoffs caused by the first tried move
+  - `avg_branch`: Mean branching factor
+  - `ai_nodes`, `ai_moves`: Nodes searched and AI moves per game
+  - `game_wall_ms`: Total wall time per game
+  - `did_castle`, `did_en_passant`, `did_promotion`: Special-move flags
+  - `result`: Game outcome
+
+### Observations
+
+- **Perft validation:** Depth **1–5** passed; all generated moves were **legal**.
+- **Special moves:** Engine correctly executed **pawn promotions**, **castling** (both sides), and **en passant**.
+- **Draw detection:** Observed all standard draws in arena play:
+  - **Threefold repetition** (most common),
+  - **Insufficient material**,
+  - **50-move rule**.
+- **Per-move time vs depth:** Median AI time per move **increased with depth** due to exponential node growth, higher effective branching, and more NN leaf evaluations (mini-batching ≤16 mitigates but does not remove this).
+- **Transposition table (TT) usage vs depth:** As the search depth increased, the transposition table demonstrated a **higher hit rate**, reflecting **greater reuse of previously explored positions**.
+- **Move-ordering/pruning stats vs depth:** Average **$\beta$-cutoffs**, **killer move uses**, and **history lookups** **increased with depth**, indicating effective ordering and pruning as node counts grow.
+- **Rough strength estimate:** Using Stockfish at depths **2/3/4** as ~**1700/1770/1830 Elo** baselines, our engine’s estimated Elo is **~1500–1800** at depths **2–4**.
+> ***NOTE**: Stockfish's elo at various depths were roughly estimated by referring the following publication: [D. R. Ferreira, “The Impact of Search Depth on Chess Playing Strength” (PDF)](https://web.ist.utl.pt/diogo.ferreira/papers/ferreira13impact.pdf)*
 ---
 
 ## Advantages & Limitations
 
 ### Advantages
-- **Rules-correctness:** Fully legal move generation with robust handling of castling, en passant, and promotions — **validated via perft up to depth 5**
+- **Rules-correctness:** Fully legal move generation with robust handling of castling, en passant, and promotions.
 - **Neural evaluation gains:** Stronger than classical numeric heuristics at comparable depth.
-- **Search efficiency:** ${\alpha}–{\beta}$ pruning + move ordering (promotions/captures/killers/history) + minibatched leaf NN eval + transposition table.
+- **Search efficiency:** ${\alpha}–{\beta}$ pruning + move ordering (promotions/captures/killers/history) + mini-batched leaf NN evaluation + transposition table.
 - **Fast inference path:** Compiled `tf.function` graph + one-time model load via multiprocessing.
 - **Resilience features:** Early draw detection and bias away from aimless repetition in near-equal positions.
 - **Opening book:** Adds variety and reduces early compute.
@@ -345,16 +368,10 @@ What we tried, measured, and rolled back—brief reasons why.
 
 - **Move caching (per-position):** Reduced repeated compute, but **startup/memory overhead** dominated in Python; net slowdown.
 - **Null-move pruning:** Fewer recursive calls, yet **interpreter + function-call overhead** in Python outweighed gains as pruning effectiveness didn’t reduce overall runtime.
-- **Quiescence search:** Conceptually sound (extend captures/tactics to reduce horizon effects), but in our pipeline **overhead > benefit**; NN leaf eval + ordering was sufficient.
+- **Quiescence search:** Conceptually sound (extend captures/tactics to reduce horizon effects), but in our pipeline **overhead > benefit**; NN leaf evaluation + move ordering was sufficient.
 - **Extra hand-crafted terms (mobility, king safety) mixed into NN output:** Led to **double-counting** and unstable scales; simpler **NN-only score** proved more consistent.
 - **Large NN batches:** Better throughput per call, but **hurt ${\alpha}–{\beta}$ move ordering** and delayed cutoffs; sweet spot remains **minibatch ≤ 16** at the frontier.
 - **CNN evaluator (12×8×8 conv net):** Trained a small CNN, but **latency increased** with no clear accuracy gain at the same budget. On small batches, per-call overhead from **tensor conversion**, reshaping to (batch_size,12,8,8), host->device copy, and kernel launch dominates. The DNN delivered lower per-leaf latency.
-
----
-
-## Troubleshooting
-
-- **Stockfish not found** → Ensure the executable exists in `stockfish/` with the expected filename for y
 
 ---
 
@@ -363,7 +380,7 @@ What we tried, measured, and rolled back—brief reasons why.
 - **NNUE accumulator + INT8 head**: Skip the first layer calculation in neural network (Weights W1 * input x) and update it on each move; run the remaining layers in **INT8** big CPU speedups via SIMD (TFLite/ONNX), no retrain needed.
 - **Iterative deepening with time controls**: Practical play (per-move/total clocks); industry norm.
 - **Reinforcement learning**: useful but heavier infrastructure; add on top of supervised model.
-- **Cython/C++ hotspots**: Port performance critical functions such as move-generation, make/undo, TT probes, etc for further throughput.
+- **Cython/C++ hotspots**: Port performance critical functions such as move-generation, make/undo, Transposition table probes, etc for further throughput.
 - **Explore MCTS hybrid**: Prototype a policy/value Monte Carlo Tree Search (MCTS) variant (less classical than α–β) to compare strength vs compute trade-offs.
 
 ---
@@ -372,7 +389,7 @@ What we tried, measured, and rolled back—brief reasons why.
 
 The project poster provides a high-level overview — abstract, methodology, features, results, and future work.
 
-- **PDF:** [View the poster](Poster.pdf)
+**PDF:** [View the poster](Poster.pdf)
 
 ---
 ## License
@@ -388,3 +405,4 @@ This project is licensed under the MIT License. Please have a look at the [LICEN
 - [D. R. Ferreira, “The Impact of Search Depth on Chess Playing Strength” (PDF)](https://web.ist.utl.pt/diogo.ferreira/papers/ferreira13impact.pdf)
 - [Stockfish Developers, “Stockfish” (GitHub repository)](https://github.com/official-stockfish/Stockfish)
 - [Chessprogramming Wiki, “Chessprogramming.org.”](https://www.chessprogramming.org/)
+- [Lichess, “Lichess.org”](https://lichess.org/)
