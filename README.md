@@ -107,11 +107,22 @@ project-ai-chess-engine/
 
 ### Install
 
+#### Windows:
+
 ```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+python -m venv chess_env
+chess_env\Scripts\activate
 pip install --upgrade pip
-pip install pygame python-chess numpy pandas tensorflow tqdm matplotlib datasets
+pip install pygame python-chess numpy pandas tensorflow==2.19.0 tqdm matplotlib datasets
+```
+
+#### MacOS:
+
+```bash
+python -m venv chess_env
+source chess_env/bin/activate 
+pip install --upgrade pip
+pip install pygame python-chess numpy pandas tensorflow==2.19.0 tqdm matplotlib datasets
 ```
 
 ### Run the UI
