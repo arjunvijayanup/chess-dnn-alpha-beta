@@ -119,7 +119,7 @@ project-ai-chess-engine/
 
 ### Install
 
-#### Windows:
+#### ![Windows](https://img.shields.io/badge/Windows-0078D6?logo=windows&logoColor=white) 
 
 ```bash
 python -m venv chess_env
@@ -128,7 +128,7 @@ pip install --upgrade pip
 pip install pygame python-chess numpy pandas tensorflow==2.19.0 tqdm matplotlib datasets
 ```
 
-#### MacOS:
+#### ![macOS](https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white)
 
 ```bash
 python -m venv chess_env
