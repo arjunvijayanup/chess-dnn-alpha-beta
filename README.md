@@ -64,7 +64,6 @@ Overall, the project demonstrates the integration of search, machine learning, a
   - [Observations](#observations)
 - [Advantages & Limitations](#advantages--limitations)
 - [Ablations, Lessons Learned](#ablations-lessons-learned)
-- [Troubleshooting](#troubleshooting)
 - [Future Scope](#future-scope)
 - [Poster](#poster)
 - [License](#license)
@@ -309,6 +308,8 @@ ___
 
 ## Benchmarking Against Stockfish
 
+We ran **50 fixed-depth games for each (our-depth, Stockfish-depth) combination** to evaluate the performance of our AI. The plot and table below report **W–D–L outcomes** and **search-efficiency metrics**, respectively.
+
 <p align="center">
   <img src="assets/stockfishvsAI.png" alt="stockfishvsAI" width="800"><br>
   <em>Arena Outcomes vs Stockfish — 50 game simulations per depth combination, W–D–L.</em>
@@ -400,9 +401,10 @@ This project is licensed under the MIT License. Please have a look at the [LICEN
 ## References
 
 - [Eddie Sharick, “Creating a Chess Engine in Python” (YouTube playlist)](https://youtube.com/playlist?list=PLBwF487qi8MGU81nDGaeNE1EnNEPYWKY_)
+- [Klein, D. (2022). "Neural Networks for Chess."](https://doi.org/10.48550/arXiv.2209.01506)
 - [Hugging Face, “Hugging Face — The AI community building the future.”](https://huggingface.co/)
 - [Amazon Web Services, “Amazon SageMaker — Documentation.”](https://docs.aws.amazon.com/sagemaker/)
 - [D. R. Ferreira, “The Impact of Search Depth on Chess Playing Strength” (PDF)](https://web.ist.utl.pt/diogo.ferreira/papers/ferreira13impact.pdf)
 - [Stockfish Developers, “Stockfish” (GitHub repository)](https://github.com/official-stockfish/Stockfish)
-- [Chessprogramming Wiki, “Chessprogramming.org.”](https://www.chessprogramming.org/)
+- [Chessprogramming Wiki, “Chessprogramming.org”](https://www.chessprogramming.org/)
 - [Lichess, “Lichess.org”](https://lichess.org/)
