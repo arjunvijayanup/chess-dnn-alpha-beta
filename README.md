@@ -400,7 +400,7 @@ This project is licensed under the MIT License. Please have a look at the [LICEN
 ---
 ## References
 
-- [Eddie Sharick, “Creating a Chess Engine in Python” (YouTube playlist)](https://youtube.com/playlist?list=PLBwF487qi8MGU81nDGaeNE1EnNEPYWKY_)
+- [Eddie Sharick, “Creating a Chess Engine in Python”](https://youtube.com/playlist?list=PLBwF487qi8MGU81nDGaeNE1EnNEPYWKY_)
 - [Klein, D. (2022). "Neural Networks for Chess."](https://doi.org/10.48550/arXiv.2209.01506)
 - [Hugging Face, “Hugging Face — The AI community building the future.”](https://huggingface.co/)
 - [Amazon Web Services, “Amazon SageMaker — Documentation.”](https://docs.aws.amazon.com/sagemaker/)
