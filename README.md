@@ -42,7 +42,7 @@ Overall, the project demonstrates the integration of search, machine learning, a
 - [Motivation](#motivation)
 - [Highlights](#highlights)
 - [Repository Layout](#repository-layout)
-- [Quick Start](#quick-start)
+- [Setup](#setup)
   - [Install](#install)
   - [Run the UI](#run-the-ui)
 - [Methodology](#methodology)
@@ -115,7 +115,7 @@ project-ai-chess-engine/
 
 ---
 
-## Quick Start
+## Setup
 
 ### Install
 
