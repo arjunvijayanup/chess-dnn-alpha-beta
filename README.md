@@ -143,9 +143,9 @@ python chessMain.py
 
 In the Pygame start overlay, choose **White** and **Black** controllers (Human / AI / Stockfish) and their depths.
 
-- **Move input**: click source → destination squares.
-- **Promotion**: press `q`/`r`/`b`/`n` when prompted.
-- **Undo**: press `z`. (An `r` key handler exists for quick reset of chess pieces.)
+- **Move input**: click source → destination squares.  
+- **Promotion**: ♕ <kbd>q</kbd> / ♖ <kbd>r</kbd> / ♗ <kbd>b</kbd> / ♘ <kbd>n</kbd>  
+- **Undo**: ↩️ <kbd>z</kbd>  (reset: <kbd>r</kbd>)  
 
 | ![](assets/chess_UI.gif) | ![](assets/human_vs_AI.gif) |
 |:--:|:--:|
