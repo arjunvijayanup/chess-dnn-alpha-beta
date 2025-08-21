@@ -24,16 +24,22 @@
 &#x20; &#x20;
 
 <p align="justify">
-Our project explores a <b>hybrid</b> chess engine that combines classical search techniques with a neural network-based evaluation function. 
-The engine employs <b>α–β pruning</b>, a core component of engines like Stockfish, to efficiently search the game tree. 
-Following the <b>"full mode"</b> methodology of engines like AlphaZero, our AI uses a <b>deep neural network (DNN)</b> to evaluate board positions instead of legacy handcrafted rules. 
-We evaluate the performance of our engine by comparing its <b>search efficiency</b> and <b>playing strength</b> against a fixed-depth Stockfish engine.
+This project implements a <b>hybrid</b> chess engine that integrates classical search techniques with a neural network–based evaluation function. The engine applies a <b>Negamax search with α–β pruning</b>, a standard approach in modern chess engines, to efficiently traverse the game tree. Board evaluation is performed by a <b>deep neural network (DNN)</b>, trained on encoded chess positions, which replaces traditional handcrafted evaluation rules. This combination allows the engine to capture tactical and positional patterns beyond those represented in simple numeric heuristics.
+</p>
+
+<p align="justify">
+The system includes several supporting features: a transposition table to avoid redundant calculations, killer move and history heuristics to improve move ordering, and an opening book derived from Lichess data to strengthen early play. A Pygame-based graphical user interface (GUI) enables play in multiple configurations, including <b>Human vs AI, AI vs AI, and AI vs Stockfish</b>. Integration with the Stockfish engine provides a benchmark for performance comparisons. In fixed-depth arena matches, the engine achieved an estimated <b>Elo rating in the 1500–1800</b> range at depths 2–4.
+</p>
+
+<p align="justify">
+Overall, the project demonstrates the integration of search, machine learning, and user interface design within a chess engine, highlighting both the potential and current limitations of Python-based AI systems.
 </p>
 
 ---
 
 ## Table of Contents
 
+- [Motivation](#motivation)
 - [Highlights](#highlights)
 - [Repository Layout](#repository-layout)
 - [Quick Start](#quick-start)
@@ -62,6 +68,12 @@ We evaluate the performance of our engine by comparing its <b>search efficiency<
 - [References](#references)
 
 ---
+
+## Motivation
+
+The design of this engine is guided by two complementary inspirations in modern computer chess. The α–β search framework is motivated by Stockfish, which demonstrates the effectiveness of deep, optimized search with strong pruning techniques. For position evaluation, our approach draws inspiration from AlphaZero, which employs a full neural network model (in their case, a convolutional architecture). While we initially considered CNN-based evaluation, this was set aside due to practical constraints, and we instead adopted a fully connected DNN.
+
+Implementing a full-model DNN in Python introduced its own efficiency challenges, particularly with inference speed during deep search. As a result, part of our motivation also shifted toward engineering improvements that reduce per-move computation time. These trade-offs, along with the limitations of our chosen architecture, are discussed further in the Ablations section.
 
 ## Highlights
 
