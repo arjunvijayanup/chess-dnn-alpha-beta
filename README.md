@@ -50,13 +50,17 @@ Overall, the project demonstrates the integration of search, machine learning, a
 - [Methodology](#methodology)
   - [Overview](#overview)  
   - [How the Engine Works](#how-the-engine-works)
-    - [Game state & move generation](#game-state--move-generation)
+    - [Game state & legal move generation](#game-state-legal-move)
     - [Search (Negamax + Alpha-Beta Pruning)](#search-negamax-ab-pruning)
-    - [Evaluation (782‑dim features)](#evaluation-782dim-features)
-    - [Incremental updates & batching](#incremental-updates--batching)
+    - [Repetition & “Ping-Pong” handling](#repetition-ping-pong-handling)
+    - [Evaluation](#evaluation-tf-model)
     - [Move ordering heuristics](#move-ordering-heuristics)
+    - [Incremental encodings & mini-batching](#incremental-encodings-mini-batching)
     - [Opening book](#opening-book)
     - [Stockfish integration](#stockfish-integration)
+    - [Multiprocessing](#multiprocessing)
+    - [UI/UX (Pygame)](#ui-ux-pygame)
+    - [Score Table](#score-table)
   - [Network Architecture & Training](#network-architecture--training)
   - [Prediction Speedups](#prediction-speedups)
 - [Benchmarking Against Stockfish](#benchmarking-against-stockfish)
@@ -180,6 +184,7 @@ the training environment.</em>
 
 ### How the Engine Works
 
+<a id="game-state-legal-move"></a>
 #### 1) Game state & legal move generation — **[`chessEngine.py`](./chessEngine.py)**
 
 - `GameState` stores the board (8×8, two‑char piece codes like `wQ`, `bN`), side‑to‑move, castling rights, en‑passant, half‑move counter, and move log.
@@ -194,11 +199,13 @@ the training environment.</em>
 - **Transposition table (TT)**: a Python dict keyed by FEN with flags `EXACT`, `LOWER`, `UPPER` to bound or commit scores.
 - **Move ordering**: see 5; ordering is applied before recursion each ply.
 
+<a id="repetition-ping-pong-handling"></a>
 #### 3) Repetition & “Ping-Pong” handling — **[`chessAI.py`](./chessAI.py)**
 
 -  **Early draw detection**: Treat threefold repetition, 50-move rule, and insufficient material as terminal draws (searched no further).
 -  **Ping-pong penalty**: When the position is drawish (|score| ≤ $\epsilon$), penalize immediate ABAB repetitions that don’t change material/rights (no capture/castle/promo). A small `PING_PONG_PENALTY` is applied only at the frontier and never cached as an EXACT TT score.
 
+<a id="evaluation-tf-model"></a>
 #### 4) Evaluation — **[`chessEncoding.py`](./chessEncoding.py)** + TF Model (`lichess_eval_model.keras`)
 
 -  **Feature vector (782-D)**: 768 piece-plane encodings + 14 auxiliary features (side-to-move, castling rights, ep file, half-move clock, etc.).
@@ -206,6 +213,7 @@ the training environment.</em>
 -  **Model lifecycle**: the AI process loads the Keras model once (path set by `MODEL_PATH`). The first call compiles a `tf.function` prediction graph; later calls reuse it (lower overhead than model.predict in this setup).
 -  **Terminal scoring**: checkmate ≫ draw ≫ worst evaluation; stalemate anchored at 0 to avoid horizon artifacts.
 
+<a id="move-ordering-heuristics"></a>
 #### 5) Move ordering heuristics — **[`chessAI.py`](./chessAI.py)**
 
 -  **Priority**: Promotion > Capture > Killer > Quiet (history-ordered).
@@ -213,11 +221,13 @@ the training environment.</em>
 -  **History heuristic**: quiet-move history increments with a depth-squared term on β-cutoff; used as a tiebreaker within quiets.
 -  This ordering increases early β-cutoffs and improves TT usefulness.
 
+<a id="incremental-encodings-mini-batching"></a>
 #### 6) Incremental encodings & mini-batching — **[`chessAI.py`](./chessAI.py)** + **[`chessEncoding.py`](./chessEncoding.py)**
 
 -  **Incremental updates**: rather than recomputing the full 782-D vector, child positions **toggle only the changed indices** (move, capture, castling, ep, promotion).
 -  **Frontier minibatching**: at the leaf frontier (`search_depth_left = 1`), **siblings are encoded together** and sent to the NN in a single batch (default batch ≈ 16) to amortize framework overhead without harming ordering.
 
+<a id="opening-book"></a>
 #### 7) Opening book — **[`chessOpening.py`](./chessOpening.py)**
 
 -  **Data**: curated**[Lichess openings dataset](https://huggingface.co/datasets/Lichess/chess-openings)**.
@@ -228,16 +238,19 @@ the training environment.</em>
 |:--:|:--:|:--:|
 | *Indian Defense* | *Queens Gambit* | *Zukertort Opening* |
 
+<a id="stockfish-integration"></a>
 #### 8) Stockfish integration —  **[`stockfishHandler.py`](./stockfishHandler.py)**
 
 -  **Handler**: `StockfishPlayer` encapsulates UCI I/O and converts between our `GameState` **(via FEN)** and `python-chess`.
 -  **Binaries**: chooses an OS-specific default from the `stockfish/` folder; falls back to `shutil.which("stockfish")` if not executable.
 -  **UI wiring**: the UI can run **separate instances per side** (e.g., human vs Stockfish, AI vs Stockfish) and currently exposes **fixed depth**; time controls and options (hash/threads/skill) are easy extensions.
 
+<a id="multiprocessing"></a>
 #### 9) Multiprocessing — **[`chessMain.py`](./chessMain.py)** + **[`chessAI.py`](./chessAI.py)**
 
 -  The AI runs in a **separate process**; the UI enqueues requests and receives replies, keeping the Pygame loop responsive and **warming** the TF graph only once.
 
+<a id="ui-ux-pygame"></a>
 #### 10) UI/UX (Pygame) —  **[`chessMain.py`](./chessMain.py)**
 
 -  Initializes Pygame, window and configuration.
