@@ -338,7 +338,7 @@ We ran **50 fixed-depth games for each (our-depth, Stockfish-depth) combination*
 NPS/TT/β-cutoffs/killer/history are pooled averages. Positive ΔElo favors our AI. TT = transposition table.</em>
 </p>
 
-Detailed results and additional analyses are available in `arena_results_*.csv` files in the [`stats/`](stats/) directory. **Also in the CSVs (not shown in the summary table):**
+Detailed results and additional analyses are available in `arena_results_*.csv` files in the [`stats/`](stats/) directory. **Also shown in the CSVs (not shown in the summary table):**
   - `tt_probes`, `tt_hit_rate`, `tt_stores`: Detailed TT activity
   - `first_move_cutoffs`: $\beta$-cutoffs caused by the first tried move
   - `avg_branch`: Mean branching factor
